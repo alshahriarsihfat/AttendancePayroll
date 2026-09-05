@@ -26,11 +26,11 @@ export async function PUT(request: Request) {
     create: {
       key: STATE_KEY,
       data: payload.data as Prisma.InputJsonValue,
-      session: payload.session == null ? null : payload.session as Prisma.InputJsonValue,
+      session: payload.session == null ? Prisma.JsonNull : payload.session as Prisma.InputJsonValue,
     },
     update: {
       data: payload.data as Prisma.InputJsonValue,
-      session: payload.session == null ? null : payload.session as Prisma.InputJsonValue,
+      session: payload.session == null ? Prisma.JsonNull : payload.session as Prisma.InputJsonValue,
     },
   });
 

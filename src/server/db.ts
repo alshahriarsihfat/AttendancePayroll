@@ -7,9 +7,8 @@
 //   3. Use the Neon driver adapter for HTTP-based serverless queries
 // ============================================================================
 
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
-import { Pool } from "@neondatabase/serverless";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
@@ -25,9 +24,7 @@ const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    adapter: new PrismaNeon(
-      new Pool({ connectionString: process.env.DATABASE_URL })
-    ),
+    adapter: new PrismaNeon({ connectionString: process.env.DATABASE_URL! }),
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
 
@@ -38,8 +35,8 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 // Essential for payment processing where you must update Payment,
 // AdvanceLog, and Staff.advance together or not at all.
 // ---------------------------------------------------------------------------
-export async function withTransaction<T>(fn: (tx: PrismaClient) => Promise<T>): Promise<T> {
-  return prisma.$transaction(async (tx) => fn(tx as unknown as PrismaClient));
+export async function withTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return prisma.$transaction(async (tx: Prisma.TransactionClient) => fn(tx));
 }
 
 // ---------------------------------------------------------------------------

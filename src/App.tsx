@@ -1,17 +1,17 @@
 import { AppProvider, useApp } from "./context/AppContext";
 import { PinLogin } from "./components/PinLogin";
 import { Layout } from "./components/Layout";
-import { Dashboard } from "./pages/Dashboard";
-import { Staff } from "./pages/Staff";
-import { Attendance } from "./pages/Attendance";
-import { Leave } from "./pages/Leave";
-import { Monitor } from "./pages/Monitor";
-import { Payments } from "./pages/Payments";
-import { PayslipView } from "./pages/PayslipView";
-import { Settings } from "./pages/Settings";
-import { Guide } from "./pages/Guide";
-import { StaffTime } from "./pages/StaffTime";
-import { ClockTerminal } from "./pages/ClockTerminal";
+import { Dashboard } from "./reference-pages/Dashboard";
+import { Staff } from "./reference-pages/Staff";
+import { Attendance } from "./reference-pages/Attendance";
+import { Leave } from "./reference-pages/Leave";
+import { Monitor } from "./reference-pages/Monitor";
+import { Payments } from "./reference-pages/Payments";
+import { PayslipView } from "./reference-pages/PayslipView";
+import { Settings } from "./reference-pages/Settings";
+import { Guide } from "./reference-pages/Guide";
+import { StaffTime } from "./reference-pages/StaffTime";
+import { ClockTerminal } from "./reference-pages/ClockTerminal";
 
 function Router() {
   const { view } = useApp();

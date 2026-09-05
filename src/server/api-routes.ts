@@ -6,6 +6,7 @@
 //   npm install zod
 // ============================================================================
 
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma, payRound } from "./db";
 
@@ -137,9 +138,9 @@ export async function POST_clock(req: Request) {
       const earlyMin = now < shiftEnd ? Math.round((shiftEnd.getTime() - now.getTime()) / 60000) : 0;
 
       const closed = {
-        breaks: breaks.map((b) => (b.end ? b : { ...b, end: outISO })),
-        goOuts: goOuts.map((g) => (g.end ? g : { ...g, end: outISO })),
-        extraTime: extraTime.map((b) => (b.end ? b : { ...b, end: outISO })),
+        breaks: breaks.map((b) => (b.end ? b : { ...b, end: outISO })) as unknown as Prisma.InputJsonValue,
+        goOuts: goOuts.map((g) => (g.end ? g : { ...g, end: outISO })) as unknown as Prisma.InputJsonValue,
+        extraTime: extraTime.map((b) => (b.end ? b : { ...b, end: outISO })) as unknown as Prisma.InputJsonValue,
       };
 
       await prisma.timeSession.update({
@@ -236,7 +237,7 @@ export async function POST_payment(req: Request) {
     const netPay = payRound(netEarned - advanceAdjusted);
 
     // ---- ATOMIC TRANSACTION ----
-    const payment = await prisma.$transaction(async (tx) => {
+    const payment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const p = await tx.payment.create({
         data: {
           staffId: staff.employeeId, sessionId: session.id,
