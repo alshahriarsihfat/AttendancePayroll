@@ -1,0 +1,276 @@
+// ============================================================================
+// AttendancePayroll — Neon PostgreSQL schema
+// Copy this file into your Next.js project at prisma/schema.prisma
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums (Fixed format for Prisma compliance)
+// ---------------------------------------------------------------------------
+enum Role {
+  ADMIN
+  SUPERVISOR
+  STAFF
+}
+
+enum SalaryType {
+  DAILY
+  WEEKLY
+  MONTHLY
+  HOURLY
+}
+
+enum StaffStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+  UNPAID
+}
+
+enum AdvanceType {
+  GIVEN
+  ADJUSTED
+}
+
+// ---------------------------------------------------------------------------
+// Staff
+// ---------------------------------------------------------------------------
+model Staff {
+  id           String      @id @default(cuid())
+  employeeId   String      @unique            // KP9820
+  username     String      @unique
+  password     String                         // bcrypt hash in production
+  fullName     String
+  email        String?
+  phone        String?
+  department   String
+  jobTitle     String
+  section      String      @default("Sales Floor")
+  counter      Int?                           // 1–9 (Pharmacy Counter)
+  role         Role        @default(STAFF)
+  salaryType   SalaryType  @default(DAILY)
+  baseSalary   Float       @default(0)        // monthly BDT
+  dailyRate    Float       @default(0)
+  hourlyRate   Float       @default(0)
+  shiftStart   String      @default("09:00 AM")
+  shiftEnd     String      @default("08:00 PM")
+  mealBreakMin Int         @default(30)
+  restMin      Int         @default(15)
+  photoUrl     String?
+  status       StaffStatus @default(ACTIVE)
+  isActive     Boolean     @default(true)
+  arrears      Float       @default(0)        // owed TO staff
+  advance      Float       @default(0)        // owed BY staff (অগ্রিম)
+  joinDate     DateTime
+  endDate      DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  sessions      TimeSession[]
+  payments      Payment[]
+  advanceLogs   AdvanceLog[]
+  leaveRequests LeaveRequest[]
+  leaveBalances LeaveBalance[]
+  approvals     ApprovalRequest[]
+  overtimeLogs  OvertimeLog[]
+
+  @@index([isActive, department])
+}
+
+// ---------------------------------------------------------------------------
+// Shift logs (Clock In/Out, Breaks, Field work)
+// ---------------------------------------------------------------------------
+model TimeSession {
+  id             String   @id @default(cuid())
+  staffId        String
+  staff          Staff    @relation(fields: [staffId], references: [employeeId])
+  date           DateTime                        // shift date (local midnight)
+  timeIn         DateTime
+  timeOut        DateTime?
+  completed      Boolean  @default(false)
+  autoClockedOut Boolean  @default(false)         // system closed it
+
+  breaks    Json    @default("[]")
+  goOuts    Json    @default("[]")
+  extraTime Json    @default("[]")
+
+  payments  Payment[]
+  approvals ApprovalRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, date])
+  @@index([date])
+  @@index([staffId, completed])
+}
+
+// ---------------------------------------------------------------------------
+// Payments (Paid + Dues)
+// ---------------------------------------------------------------------------
+model Payment {
+  id                 String        @id @default(cuid())
+  staffId            String
+  staff              Staff         @relation(fields: [staffId], references: [employeeId])
+  sessionId          String?
+  session            TimeSession?  @relation(fields: [sessionId], references: [id])
+  date               DateTime                      // shift date
+  paidAt             DateTime                      // EXACT cash-flow timestamp
+  periodLabel        String
+  dutyHours          Float         @default(0)
+  workedMin          Float         @default(0)
+  breakMin           Float         @default(0)
+  overBreakMin       Float         @default(0)
+  overtimeMin        Float         @default(0)
+  hourlyRate         Float         @default(0)
+  grossPay           Float         @default(0)
+  overtimePay        Float         @default(0)
+  overBreakDeduction Float         @default(0)
+  advanceAdjusted    Float         @default(0)      // advance deducted this payout
+  netPay             Float         @default(0)      // final cash handed over
+  status             PaymentStatus @default(PAID)
+  paidBy             String                          // supervisor/admin name
+  createdAt          DateTime      @default(now())
+
+  @@index([staffId, paidAt])
+  @@index([paidAt])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Advance (অগ্রিম) ledger — full audit trail
+// ---------------------------------------------------------------------------
+model AdvanceLog {
+  id           String      @id @default(cuid())
+  staffId      String
+  staff        Staff       @relation(fields: [staffId], references: [employeeId])
+  type         AdvanceType
+  amount       Float                          // always positive
+  balanceAfter Float                         // running balance snapshot
+  paymentId    String?                        // links to the payout that adjusted it
+  note         String?
+  createdBy    String                          // supervisor/admin
+  createdAt    DateTime    @default(now())
+
+  @@index([staffId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Overtime
+// ---------------------------------------------------------------------------
+model OvertimeLog {
+  id          String   @id @default(cuid())
+  staffId     String
+  staff       Staff    @relation(fields: [staffId], references: [employeeId])
+  date        DateTime
+  overtimeMin Float
+  hourlyRate  Float
+  amount      Float
+  createdAt   DateTime @default(now())
+
+  @@index([staffId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Leave
+// ---------------------------------------------------------------------------
+model LeaveRequest {
+  id         String    @id @default(cuid())
+  staffId    String
+  staff      Staff     @relation(fields: [staffId], references: [employeeId])
+  leaveType  String                     // Annual | Sick | Casual | ...
+  fromDate   DateTime
+  toDate     DateTime
+  days       Float
+  reason     String?
+  status     String    @default("Pending")
+  approvedBy String?
+  approvedAt DateTime?
+  comment    String?                    // reviewer note (visible to staff)
+  createdAt  DateTime  @default(now())
+
+  @@index([staffId, status])
+}
+
+model LeaveBalance {
+  id           String   @id @default(cuid())
+  staffId      String
+  staff        Staff    @relation(fields: [staffId], references: [employeeId])
+  leaveType    String
+  entitledDays Float
+  usedDays     Float    @default(0)
+  year         Int
+  updatedAt    DateTime @updatedAt
+
+  @@unique([staffId, leaveType, year])
+}
+
+// ---------------------------------------------------------------------------
+// Manager approvals (late / early exit / break overrun)
+// ---------------------------------------------------------------------------
+model ApprovalRequest {
+  id          String      @id @default(cuid())
+  staffId     String
+  staff       Staff       @relation(fields: [staffId], references: [employeeId])
+  sessionId   String
+  session     TimeSession @relation(fields: [sessionId], references: [id])
+  type        String      // late | early_exit | break_overrun
+  deltaMin    Float
+  date        DateTime
+  status      String      @default("pending")
+  managerNote String?
+  resolvedBy  String?
+  resolvedAt  DateTime?
+  createdAt   DateTime    @default(now())
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Audit trail (append-only)
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id         String   @id @default(cuid())
+  timestamp  DateTime @default(now())
+  action     String   // CLOCK_IN | PAYMENT | ADVANCE | ...
+  entityType String
+  entityId   String
+  actorName  String
+  actorRole  String
+  summary    String
+  managedBy  String?  // supervisor acting on behalf of staff
+
+  @@index([timestamp])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Config (business rules)
+// ---------------------------------------------------------------------------
+model Config {
+  key         String   @id
+  value       String
+  description String?
+  category    String   @default("General")
+  updatedAt   DateTime @updatedAt
+}
+
+model AppState {
+  key       String   @id @default("default")
+  data      Json
+  session   Json?
+  updatedAt DateTime @updatedAt
+}
