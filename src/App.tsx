@@ -44,10 +44,14 @@ function Shell() {
   );
 }
 
+export function AppContent() {
+  return <Shell />;
+}
+
 export default function App() {
   return (
     <AppProvider>
-      <Shell />
+      <AppContent />
     </AppProvider>
   );
 }
