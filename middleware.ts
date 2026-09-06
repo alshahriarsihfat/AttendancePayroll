@@ -24,7 +24,7 @@ export async function middleware(request: NextRequest) {
   if (pathname === "/login" || pathname.startsWith("/_next/") || pathname === "/favicon.ico" || pathname.startsWith("/api/auth")) return NextResponse.next();
   const session = await validSession(request.cookies.get(COOKIE_NAME)?.value);
   if (session) {
-    if (pathname.startsWith("/api/staff") || pathname.startsWith("/api/payments") || pathname.startsWith("/api/advance") || (pathname.startsWith("/api/state") && request.method !== "GET")) {
+    if (pathname.startsWith("/api/staff") || pathname.startsWith("/api/payments") || pathname.startsWith("/api/advance") || pathname.startsWith("/api/config") || pathname.startsWith("/api/leave") || (pathname.startsWith("/api/state") && request.method !== "GET")) {
       if (session.role !== "ADMIN" && session.role !== "SUPERVISOR") return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
     return NextResponse.next();

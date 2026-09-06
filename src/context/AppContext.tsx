@@ -611,6 +611,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (overlap) { toast("Overlaps an approved leave.", "error"); return { ok: false, errors: [{ field: "toDate", message: "Overlaps approved leave." }] }; }
     const days = workingDaysBetween(d.fromDate, d.toDate, data.holidays);
     const req: LeaveRequest = { recordId: uid("LV"), staffId: d.staffId, leaveType: d.leaveType, fromDate: d.fromDate, toDate: d.toDate, days, reason: d.reason, status: "Pending", approvedBy: null, approvedAt: null };
+    void postJson("/api/leave", req).then((response) => {
+      if (!response.ok) toast("Leave request was not saved to the server.", "error");
+    });
     setData((st) => ({ ...st, leaveRequests: [req, ...st.leaveRequests] }));
     audit("LEAVE_REQUEST", "Leave", req.recordId, `${d.leaveType} leave requested (${days}d).`);
     toast("Leave request submitted.", "success");
@@ -626,6 +629,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const rem = bal ? bal.entitledDays - bal.usedDays : 0;
       if (req.leaveType !== "Unpaid" && rem < req.days) { toast(`Insufficient ${req.leaveType} balance.`, "error"); return { ok: false }; }
     }
+    void postJson("/api/leave", { recordId: id, status, approvedBy: session?.name ?? "Admin", comment }, "PATCH").then((response) => {
+      if (!response.ok) toast("Leave decision was not saved to the server.", "error");
+    });
     setData((st) => ({
       ...st,
       leaveRequests: st.leaveRequests.map((r) => (r.recordId === id ? { ...r, status, comment: comment?.trim() || undefined, approvedBy: session?.name ?? "Admin", approvedAt: nowISO() } : r)),
@@ -646,6 +652,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---- config + sync ----
   const updateConfig = useCallback((key: string, value: string) => {
     if (!guard("manage.config")) return;
+    void postJson("/api/config", { key, value }, "PUT").then((response) => {
+      if (!response.ok) toast("Setting was not saved to the database.", "error");
+    });
     setData((st) => {
       const next = { ...st, config: st.config.map((c) => (c.key === key ? { ...c, value } : c)) };
       // Leave-entitlement keys instantly propagate to every staff balance.

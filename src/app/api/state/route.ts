@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { DEFAULT_CONFIG } from "@/lib/config";
 import { prisma } from "@/server/db";
 
 export const runtime = "nodejs";
@@ -13,6 +14,11 @@ type StatePayload = {
 export async function GET() {
   const state = await prisma.appState.findUnique({ where: { key: STATE_KEY } });
   const staffRows = await prisma.staff.findMany({ orderBy: { employeeId: "asc" } });
+  let configRows = await prisma.config.findMany({ orderBy: { key: "asc" } });
+  if (configRows.length === 0) {
+    await prisma.config.createMany({ data: DEFAULT_CONFIG, skipDuplicates: true });
+    configRows = await prisma.config.findMany({ orderBy: { key: "asc" } });
+  }
   const snapshot = state?.data as { staff?: unknown } | null;
   const data = snapshot && staffRows.length > 0
     ? {
@@ -47,8 +53,9 @@ export async function GET() {
           arrears: staff.arrears,
           advance: staff.advance,
         })),
+        config: configRows,
       }
-    : state?.data ?? null;
+    : state?.data ? { ...(state.data as object), config: configRows } : { config: configRows };
   return Response.json({ data });
 }
 

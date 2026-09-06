@@ -48,19 +48,17 @@ export function Payments() {
     );
   }, [data.sessions, data.payments, data.staff, data.config, today]);
 
-  // ---- 2. Active Staff List (clocked-out, payable) ----
+  // ---- 2. Active Staff List (payable and advance-eligible) ----
   const payable = useMemo(() => {
     const paidIds = new Set(data.payments.map((p) => p.sessionId));
     return data.staff
       .filter((s) => s.isActive)
       .map((s) => {
         const sess = data.sessions.find((x) => x.staffId === s.employeeId && x.date === today);
-        if (!sess || !sess.timeOut) return null;
-        const isPaid = paidIds.has(sess.id);
-        const calc = computeSession(sess, s, data.config, new Date(sess.timeOut).getTime());
+        const isPaid = sess ? paidIds.has(sess.id) : false;
+        const calc = sess ? computeSession(sess, s, data.config, new Date(sess.timeOut ?? Date.now()).getTime()) : null;
         return { staff: s, sess, calc, isPaid };
       })
-      .filter((x): x is NonNullable<typeof x> => x !== null)
       .sort((a, b) => Number(a.isPaid) - Number(b.isPaid));
   }, [data.staff, data.sessions, data.payments, data.config, today]);
 
@@ -94,22 +92,22 @@ export function Payments() {
       <Card className="overflow-hidden">
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
           <p className="text-sm font-semibold text-slate-900">Today's Staff</p>
-          <span className="text-xs text-slate-400">{payable.length} clocked out</span>
+          <span className="text-xs text-slate-400">{payable.filter((row) => row.sess?.timeOut).length} clocked out</span>
         </div>
 
         {payable.length === 0 ? (
           <EmptyState icon="clock" title="No completed shifts yet" desc="Staff appear here once they clock out." />
         ) : (
           <div className="divide-y divide-slate-100">
-            {payable.map(({ staff, calc, isPaid }) => (
+            {payable.map(({ staff, sess, calc, isPaid }) => (
               <StaffRow
                 key={staff.employeeId}
                 staff={staff}
-                workedMin={calc.grossMin}
-                earned={calc.netPay}
+                workedMin={calc?.grossMin ?? 0}
+                earned={calc?.netPay ?? 0}
                 isPaid={isPaid}
                 canPay={canPay}
-                onPay={() => setPayFor(staff.employeeId)}
+                onPay={() => sess?.timeOut && setPayFor(sess.id)}
                 onAdvance={() => { setAdvanceFor(staff.employeeId); setAdvanceAmt(""); }}
               />
             ))}
@@ -264,10 +262,10 @@ function StaffRow({ staff, workedMin, earned, isPaid, canPay, onPay, onAdvance }
       </div>
 
       {/* --- Action buttons: full-width row on mobile, auto-width on desktop --- */}
-      {canPay && !isPaid && (
+      {canPay && (
         <div className="flex w-full gap-2 sm:mt-0 sm:w-auto">
           <Button size="sm" variant="secondary" icon="handCoin" onClick={onAdvance} className="flex-1 sm:flex-none">Advance</Button>
-          <Button size="sm" variant="success" icon="check" onClick={onPay} className="flex-1 sm:flex-none">Pay Now</Button>
+          {!isPaid && workedMin > 0 && <Button size="sm" variant="success" icon="check" onClick={onPay} className="flex-1 sm:flex-none">Pay Now</Button>}
         </div>
       )}
     </div>

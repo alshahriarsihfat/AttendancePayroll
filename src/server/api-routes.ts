@@ -31,7 +31,8 @@ export async function POST_clock(req: Request) {
   const { employeeId, action, managedBy } = body.data;
   const now = new Date();
   const today = new Date(now); today.setHours(0, 0, 0, 0);
-  if ((action === "in" || action === "out") && !isOperatingWindow(now)) {
+  const config = await loadConfig();
+  if ((action === "in" || action === "out") && !isOperatingWindow(now, config)) {
     return Response.json({ error: "Clock actions are available from 09:00 AM through 11:00 PM" }, { status: 422 });
   }
 
@@ -39,6 +40,18 @@ export async function POST_clock(req: Request) {
     const staff = await prisma.staff.findUnique({ where: { employeeId } });
     if (!staff || !staff.isActive) {
       return Response.json({ error: "Staff not found or inactive" }, { status: 404 });
+    }
+
+    const approvedLeave = await prisma.leaveRequest.findFirst({
+      where: {
+        staffId: employeeId,
+        status: "Approved",
+        fromDate: { lte: today },
+        toDate: { gte: today },
+      },
+    });
+    if (approvedLeave && (action === "in" || action === "out")) {
+      return Response.json({ error: "Clocking is disabled during approved leave" }, { status: 409 });
     }
 
     // ---- CLOCK IN ----
@@ -76,7 +89,7 @@ export async function POST_clock(req: Request) {
             managedBy,
           },
         });
-        if (lateMin >= 10) {
+        if (lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10)) {
           await tx.approvalRequest.create({ data: { staffId: employeeId, sessionId: session.id, type: "late", deltaMin: lateMin, date: today } });
         }
         return { session, lateMin };
@@ -211,6 +224,7 @@ export async function POST_payment(req: Request) {
 
     // ---- Wage calculation (mirrors frontend computeSession) ----
     const staff = session.staff;
+    const config = await loadConfig();
     const shiftHours = payRound(parseShiftHours(staff.shiftStart, staff.shiftEnd));
     const hourlyRate = payRound(getHourlyRate(staff, shiftHours));
 
@@ -227,7 +241,7 @@ export async function POST_payment(req: Request) {
       else if (b.type === "rest") restMin += mins;
       else unpaidMin += mins;
     }
-    const paidAllow = staff.mealBreakMin + staff.restMin;   // 45
+    const paidAllow = configNumber(config, "MEAL_BREAK_MINUTES", staff.mealBreakMin) + configNumber(config, "REST_BREAK_MINUTES", staff.restMin);
     const paidTaken = mealMin + restMin;
     const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
 
@@ -241,7 +255,7 @@ export async function POST_payment(req: Request) {
     const basicMin = Math.max(0, workedMin - overtimeMin);
     const grossPay = payRound(hourlyRate * (basicMin / 60));
     const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
-    const overtimePay = payRound(hourlyRate * 1.25 * (overtimeMin / 60));
+    const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (overtimeMin / 60));
     const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
 
     // ---- AUTO ADVANCE ADJUSTMENT ----
@@ -359,9 +373,21 @@ function parseShiftTime(t: string): [number, number] {
   return [h, parseInt(m[2])];
 }
 
-function isOperatingWindow(now: Date): boolean {
+async function loadConfig(): Promise<Record<string, string>> {
+  const rows = await prisma.config.findMany();
+  return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+}
+
+function configNumber(config: Record<string, string>, key: string, fallback: number): number {
+  const value = Number(config[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function isOperatingWindow(now: Date, config: Record<string, string>): boolean {
   const minutes = now.getHours() * 60 + now.getMinutes();
-  return minutes >= 9 * 60 && minutes <= 23 * 60;
+  const open = parseShiftTime(config.FLOOR_OPEN_TIME ?? "09:00 AM");
+  const close = parseShiftTime(config.FLOOR_CLOSE_TIME ?? "11:00 PM");
+  return minutes >= open[0] * 60 + open[1] && minutes <= close[0] * 60 + close[1];
 }
 
 function parseShiftHours(start: string, end: string): number {
