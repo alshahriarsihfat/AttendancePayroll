@@ -1,7 +1,7 @@
 import type {
   BreakType, ClockStatus, ConfigEntry, Employee, TimeSession,
 } from "../types";
-import { configNumber } from "./config";
+import { configNumber, configValue } from "./config";
 import { minutesBetween } from "./dates";
 import { payRound } from "./currency";
 
@@ -28,9 +28,13 @@ export function parseTime12(time: string): number {
 }
 
 /** The live floor accepts clock actions throughout the 09:00-23:00 window. */
-export function isWithinOperatingWindow(date: Date = new Date()): boolean {
+export function isWithinOperatingWindow(date: Date = new Date(), config: ConfigEntry[] = []): boolean {
   const minutes = date.getHours() * 60 + date.getMinutes();
-  return minutes >= parseTime12("09:00 AM") && minutes <= parseTime12("11:00 PM");
+  const open = parseTime12(configValue(config, "FLOOR_OPEN_TIME", "09:00 AM"));
+  const close = parseTime12(configValue(config, "FLOOR_CLOSE_TIME", "11:00 PM"));
+  return open <= close
+    ? minutes >= open && minutes <= close
+    : minutes >= open || minutes <= close;
 }
 
 /** An employee's resolved shift params. */
@@ -71,8 +75,10 @@ export function hourlyRateFor(staff: Pick<Employee, "salaryType" | "hourlyRate" 
 /** Datetime (ms) of the scheduled shift start/end on a given clock-in day. */
 export function scheduledBoundary(timeInISO: string, boundaryMin: number): number {
   const d = new Date(timeInISO);
+  const timeInMinutes = d.getHours() * 60 + d.getMinutes();
   d.setHours(0, 0, 0, 0);
-  return d.getTime() + boundaryMin * 60000;
+  const dayOffset = boundaryMin <= timeInMinutes ? 24 * 60 : 0;
+  return d.getTime() + (boundaryMin + dayOffset) * 60000;
 }
 
 export interface BreakTotals {
@@ -180,7 +186,8 @@ export function computeSession(
 
   // Overtime = time worked beyond scheduled shift end.
   const schedEnd = scheduledBoundary(session.timeIn, shift.endMin);
-  const autoOvertimeMin = endMs > schedEnd ? Math.round((endMs - schedEnd) / 60000) : 0;
+  const timeInMs = new Date(session.timeIn).getTime();
+  const autoOvertimeMin = endMs >= timeInMs && endMs > schedEnd ? Math.round((endMs - schedEnd) / 60000) : 0;
 
   // Manual "Extra Time" segments (toggle) — added to the isolated overtime queue.
   let extraTimeMin = 0, extraTimeActive = false;

@@ -50,7 +50,7 @@ export function ClockTerminal() {
     ? Math.max(0, Math.round((scheduledBoundary(sess.timeIn, shift.endMin) - new Date(sess.timeOut ?? now).getTime()) / 60000))
     : 0;
   // Clock actions are available throughout the broad 09:00 AM-11:00 PM floor window.
-  const beforeWindow = !sess && !isWithinOperatingWindow(new Date(now));
+  const beforeWindow = !sess && !isWithinOperatingWindow(new Date(now), data.config);
   // Next scheduled shift (shown after clock-out).
   const nextShift = nextShiftAt(shift.startMin, now);
   const nextShiftDay = new Date(nextShift).toLocaleDateString("en-US", { weekday: "long" });

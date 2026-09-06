@@ -30,7 +30,8 @@ export async function POST_clock(req: Request) {
   }
   const { employeeId, action, managedBy } = body.data;
   const now = new Date();
-  const today = new Date(now); today.setHours(0, 0, 0, 0);
+  const todayKey = dhakaDateKey(now);
+  const today = dhakaStart(todayKey);
   const config = await loadConfig();
   if ((action === "in" || action === "out") && !isOperatingWindow(now, config)) {
     return Response.json({ error: "Clock actions are available from 09:00 AM through 11:00 PM" }, { status: 422 });
@@ -69,8 +70,7 @@ export async function POST_clock(req: Request) {
         });
         for (const open of openSessions) {
           const [endHour, endMinute] = parseShiftTime(staff.shiftEnd);
-          const autoOut = new Date(open.date);
-          autoOut.setHours(endHour, endMinute, 0, 0);
+          const autoOut = dhakaAt(dhakaDateKey(open.date), endHour * 60 + endMinute);
           await tx.timeSession.update({
             where: { id: open.id },
             data: { timeOut: autoOut, completed: true, autoClockedOut: true },
@@ -78,7 +78,7 @@ export async function POST_clock(req: Request) {
         }
 
         const [hh, mm] = parseShiftTime(staff.shiftStart);
-        const shiftStart = new Date(today); shiftStart.setHours(hh, mm, 0, 0);
+        const shiftStart = dhakaAt(todayKey, hh * 60 + mm);
         const lateMin = now > shiftStart ? Math.round((now.getTime() - shiftStart.getTime()) / 60000) : 0;
         const session = await tx.timeSession.create({ data: { staffId: employeeId, date: today, timeIn: now } });
         await tx.auditLog.create({
@@ -159,7 +159,7 @@ export async function POST_clock(req: Request) {
       const outISO = now.toISOString();
       // Early-departure detection
       const [eh, em] = parseShiftTime(staff.shiftEnd);
-      const shiftEnd = new Date(today); shiftEnd.setHours(eh, em, 0, 0);
+      const shiftEnd = dhakaAt(todayKey, eh * 60 + em);
       const earlyMin = now < shiftEnd ? Math.round((shiftEnd.getTime() - now.getTime()) / 60000) : 0;
 
       const closed = {
@@ -247,7 +247,7 @@ export async function POST_payment(req: Request) {
 
     // Overtime: minutes past scheduled shift end
     const [eh, em] = parseShiftTime(staff.shiftEnd);
-    const shiftEnd = new Date(session.date); shiftEnd.setHours(eh, em, 0, 0);
+    const shiftEnd = dhakaAt(dhakaDateKey(session.timeIn), eh * 60 + em);
     const overtimeMin = session.timeOut > shiftEnd
       ? Math.round((session.timeOut.getTime() - shiftEnd.getTime()) / 60000) : 0;
 
@@ -384,10 +384,43 @@ function configNumber(config: Record<string, string>, key: string, fallback: num
 }
 
 function isOperatingWindow(now: Date, config: Record<string, string>): boolean {
-  const minutes = now.getHours() * 60 + now.getMinutes();
+  const minutes = dhakaMinutes(now);
   const open = parseShiftTime(config.FLOOR_OPEN_TIME ?? "09:00 AM");
   const close = parseShiftTime(config.FLOOR_CLOSE_TIME ?? "11:00 PM");
-  return minutes >= open[0] * 60 + open[1] && minutes <= close[0] * 60 + close[1];
+  const openMinute = open[0] * 60 + open[1];
+  const closeMinute = close[0] * 60 + close[1];
+  return openMinute <= closeMinute ? minutes >= openMinute && minutes <= closeMinute : minutes >= openMinute || minutes <= closeMinute;
+}
+
+function dhakaParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+}
+
+function dhakaDateKey(date: Date): string {
+  const parts = dhakaParts(date);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function dhakaMinutes(date: Date): number {
+  const parts = dhakaParts(date);
+  return Number(parts.hour) * 60 + Number(parts.minute);
+}
+
+function dhakaStart(dateKey: string): Date {
+  return new Date(`${dateKey}T00:00:00+06:00`);
+}
+
+function dhakaAt(dateKey: string, minuteOfDay: number): Date {
+  const dayOffset = minuteOfDay >= 24 * 60 ? 1 : 0;
+  const normalized = minuteOfDay % (24 * 60);
+  const base = dhakaStart(dateKey);
+  base.setUTCDate(base.getUTCDate() + dayOffset);
+  base.setUTCMinutes(normalized);
+  return base;
 }
 
 function parseShiftHours(start: string, end: string): number {

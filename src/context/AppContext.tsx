@@ -770,7 +770,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [data.sessions, data.payments, data.staff, data.config]);
 
-  const anyOnDuty = data.sessions.some((s) => !s.timeOut);
+  const anyOnDuty = data.sessions.some((s) => s.completed === false && s.timeOut === null);
   const mustClockInFirst = role === "SUPERVISOR" && !!session?.staffId && !todaySession(session.staffId);
   const pendingApprovals = data.approvalRequests.filter((a) => a.status === "pending");
 

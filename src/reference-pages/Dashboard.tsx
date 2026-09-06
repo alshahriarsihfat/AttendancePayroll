@@ -32,7 +32,7 @@ export function Dashboard() {
     <div className="space-y-5 animate-fade">
       {/* Hero */}
       <Card className="overflow-hidden">
-        <div className="relative bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 p-6 text-white">
+        <div className="relative bg-linear-to-br from-emerald-700 via-teal-700 to-emerald-900 p-6 text-white">
           <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl" />
           <div className="relative flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -70,7 +70,7 @@ function Overview({ navigate }: { navigate: (p: "monitor" | "staff" | "leave" | 
       const sess = todaySession(s.employeeId);
       if (!sess) continue;
       pay += computeSession(sess, s, data.config, now).netPay;
-      onDuty++;
+      if (sess.completed === false && sess.timeOut === null) onDuty++;
     }
     return { pay, onDuty };
   }, [active, todaySession, data.config, now]);

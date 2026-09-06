@@ -37,7 +37,7 @@ export function Monitor() {
   return (
     <div className="space-y-5 animate-fade">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi icon="users2" tone="emerald" label="On Duty" value={counts.working + counts.completed} />
+        <Kpi icon="users2" tone="emerald" label="On Duty" value={counts.working + counts["on-meal"] + counts["on-rest"]} />
         <Kpi icon="meal" tone="orange" label="On Break" value={counts["on-meal"] + counts["on-rest"]} />
         <Kpi icon="calendar" tone="amber" label="On Leave" value={counts["on-leave"]} />
         <Card className="p-4"><div className="flex items-center justify-between"><div><p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Pay Today (est.)</p><p className="mt-0.5 text-2xl font-bold tabular-nums text-emerald-600">{formatBDT(totalPayToday, false)}</p></div><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600"><Icon name="handCoin" size={18} /></span></div></Card>
