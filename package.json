@@ -33,6 +33,7 @@
     "prisma": "7.10.0",
     "tailwindcss": "4.1.17",
     "@tailwindcss/postcss": "latest",
+    "tsx": "latest",
     "typescript": "5.9.3"
   }
 }
