@@ -27,6 +27,12 @@ export function parseTime12(time: string): number {
   return h * 60 + parseInt(m[2], 10);
 }
 
+/** The live floor accepts clock actions throughout the 09:00-23:00 window. */
+export function isWithinOperatingWindow(date: Date = new Date()): boolean {
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  return minutes >= parseTime12("09:00 AM") && minutes <= parseTime12("11:00 PM");
+}
+
 /** An employee's resolved shift params. */
 export interface EmpShift {
   startMin: number;       // minutes from midnight

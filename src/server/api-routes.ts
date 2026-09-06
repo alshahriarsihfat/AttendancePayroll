@@ -31,6 +31,9 @@ export async function POST_clock(req: Request) {
   const { employeeId, action, managedBy } = body.data;
   const now = new Date();
   const today = new Date(now); today.setHours(0, 0, 0, 0);
+  if ((action === "in" || action === "out") && !isOperatingWindow(now)) {
+    return Response.json({ error: "Clock actions are available from 09:00 AM through 11:00 PM" }, { status: 422 });
+  }
 
   try {
     const staff = await prisma.staff.findUnique({ where: { employeeId } });
@@ -345,6 +348,11 @@ function parseShiftTime(t: string): [number, number] {
   let h = parseInt(m[1]) % 12;
   if (/PM/i.test(m[3])) h += 12;
   return [h, parseInt(m[2])];
+}
+
+function isOperatingWindow(now: Date): boolean {
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return minutes >= 9 * 60 && minutes <= 23 * 60;
 }
 
 function parseShiftHours(start: string, end: string): number {

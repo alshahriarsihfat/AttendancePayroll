@@ -139,10 +139,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     fetch(STATE_ENDPOINT)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unable to load application state")))
-      .then((payload: { data?: Dataset; session?: Session | null }) => {
+      .then((payload: { data?: Dataset }) => {
         if (cancelled) return;
         if (payload.data) setData(migrate(payload.data));
-        setSession(payload.session ?? null);
+        return fetch("/api/auth");
+      })
+      .then((response) => response?.ok ? response.json() : null)
+      .then((payload: { session?: Session | null } | null) => {
+        if (cancelled) return;
+        setSession(payload?.session ?? null);
         setHydrated(true);
       })
       .catch(() => setHydrated(true));
@@ -155,7 +160,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void fetch(STATE_ENDPOINT, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data, session }),
+        body: JSON.stringify({ data }),
       });
     }, 250);
     return () => window.clearTimeout(timer);
@@ -204,7 +209,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setView({ page: "terminal" });
     audit("LOGIN", "Session", s.employeeId, `${s.fullName} signed in as ${s.role}.`);
   }, [data.staff, audit, toast]);
-  const logout = useCallback(() => { setSession(null); setView({ page: "dashboard" }); }, []);
+  const logout = useCallback(() => {
+    void fetch("/api/auth", { method: "DELETE" });
+    setSession(null);
+    setView({ page: "dashboard" });
+    window.location.assign("/login");
+  }, []);
   const navigate = useCallback((page: PageId, params?: Record<string, string>) => {
     setView({ page, params });
     const el = document.getElementById("pl-scroll"); if (el) el.scrollTo({ top: 0 });
@@ -553,7 +563,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   }, [data.leaveRequests, data.holidays, audit, toast]);
 
-  const decideLeave = useCallback((id: string, status: LeaveStatus): FormResult => {
+  const decideLeave = useCallback((id: string, status: LeaveStatus, comment?: string): FormResult => {
     if (!guard("manage.leave")) return { ok: false };
     const req = data.leaveRequests.find((r) => r.recordId === id);
     if (!req) return { ok: false };
@@ -564,7 +574,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     setData((st) => ({
       ...st,
-      leaveRequests: st.leaveRequests.map((r) => (r.recordId === id ? { ...r, status, approvedBy: session?.name ?? "Admin", approvedAt: nowISO() } : r)),
+      leaveRequests: st.leaveRequests.map((r) => (r.recordId === id ? { ...r, status, comment: comment?.trim() || undefined, approvedBy: session?.name ?? "Admin", approvedAt: nowISO() } : r)),
       leaveBalances: status === "Approved" && req.leaveType !== "Unpaid"
         ? st.leaveBalances.map((b) => (b.staffId === req.staffId && b.leaveType === req.leaveType ? { ...b, usedDays: b.usedDays + req.days } : b))
         : st.leaveBalances,

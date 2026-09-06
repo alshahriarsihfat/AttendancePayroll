@@ -7,7 +7,7 @@ import { Modal } from "../components/Modal";
 import { Icon } from "../components/icons";
 import { ClockInModal, ClockOutConfirm } from "../components/QuoteModal";
 import { StaffTimeManager } from "./StaffTime";
-import { empShift, computeSession, scheduledBoundary, nextShiftAt } from "../lib/timeclock";
+import { empShift, computeSession, scheduledBoundary, nextShiftAt, isWithinOperatingWindow } from "../lib/timeclock";
 import { formatCountdown, formatElapsed, formatTime12, formatDuration, formatLongDate, formatMinSec, formatLongDuration } from "../lib/dates";
 import { cn } from "../lib/utils";
 import { MOTIVATION_QUOTES, pickRandom, configValue } from "../lib/config";
@@ -20,6 +20,7 @@ export function ClockTerminal() {
   const [tab, setTab] = useState<"clock" | "stafftime" | "leave" | "history">("clock");
   const [outConfirm, setOutConfirm] = useState(false);
   const [goOutOpen, setGoOutOpen] = useState(false);
+  const [clockActionBusy, setClockActionBusy] = useState(false);
 
   const staff = session?.staffId ? staffById(session.staffId) : undefined;
   const shift = staff ? empShift(staff) : null;
@@ -46,23 +47,23 @@ export function ClockTerminal() {
   const earlyDepartureMin = sess
     ? Math.max(0, Math.round((scheduledBoundary(sess.timeIn, shift.endMin) - new Date(sess.timeOut ?? now).getTime()) / 60000))
     : 0;
-  // Clock-In window: button appears only N minutes before scheduled shift start.
-  const clockinWindow = Number(configValue(data.config, "CLOCKIN_WINDOW_MINUTES", "30"));
-  const shiftStartMs = scheduledBoundary(new Date().toISOString(), shift.startMin);
-  // If today's start already passed (or staff already has/had a session), allow clock-in.
-  const beforeWindow = !sess && now < shiftStartMs - clockinWindow * 60000;
+  // Clock actions are available throughout the broad 09:00 AM-11:00 PM floor window.
+  const beforeWindow = !sess && !isWithinOperatingWindow(new Date(now));
   // Next scheduled shift (shown after clock-out).
   const nextShift = nextShiftAt(shift.startMin, now);
   const nextShiftDay = new Date(nextShift).toLocaleDateString("en-US", { weekday: "long" });
   const nextShiftTime = formatTime12(new Date(nextShift).toISOString());
 
   const doClockIn = () => {
+    if (clockActionBusy) return;
+    setClockActionBusy(true);
     const res = clockIn(staff.employeeId);
     if (res.ok) {
       // Late → calculated variance warning. Timely → randomized Bangla care quote.
       if (res.isLate) setModal({ open: true, kind: "late", minutes: res.lateMin });
       else setModal({ open: true, kind: "quote", quote: pickRandom(MOTIVATION_QUOTES).text });
     }
+    setClockActionBusy(false);
   };
 
   return (
@@ -142,7 +143,7 @@ export function ClockTerminal() {
                       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white/15"><Icon name="clock" size={28} className="text-white" /></div>
                       <p className="mt-3 text-2xl font-bold">Shift Complete</p>
                       <p className="mt-2 text-sm opacity-80">Thank you for your dedicated service today!</p>
-                      <p className="mt-2 inline-block rounded-lg bg-white/15 px-3 py-1 text-xs">Clock-In opens {clockinWindow} min before your {shift.startTime} shift</p>
+                      <p className="mt-2 inline-block rounded-lg bg-white/15 px-3 py-1 text-xs">Clock-In is available from 09:00 AM to 11:00 PM</p>
                     </>
                   ) : (
                     // Within window — ready to clock in
@@ -198,7 +199,7 @@ export function ClockTerminal() {
 
             {/* Actions */}
             <div className="mt-4 space-y-3">
-              {isOff && !beforeWindow && <button onClick={doClockIn} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-4 text-lg font-bold text-white shadow-lg shadow-emerald-200 transition hover:bg-emerald-700 active:scale-[0.99]"><Icon name="power" size={22} /> Clock In</button>}
+              {isOff && !beforeWindow && <button disabled={clockActionBusy} onClick={doClockIn} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-4 text-lg font-bold text-white shadow-lg shadow-emerald-200 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"><Icon name="power" size={22} /> {clockActionBusy ? "Starting..." : "Clock In"}</button>}
               {isWorking && (
                 <>
                   <div className="grid grid-cols-3 gap-2.5">
@@ -260,6 +261,8 @@ export function ClockTerminal() {
         earlyMin={earlyDepartureMin}
         onClose={() => setOutConfirm(false)}
         onConfirm={() => {
+          if (clockActionBusy) return;
+          setClockActionBusy(true);
           setOutConfirm(false);
           const res = clockOut(staff.employeeId);
           if (res.ok) {
@@ -267,6 +270,7 @@ export function ClockTerminal() {
             if (res.earlyDepartureMin >= 10) setModal({ open: true, kind: "early", minutes: res.earlyDepartureMin });
             else setModal({ open: true, kind: "praise" });
           }
+          setClockActionBusy(false);
         }}
       />
       {goOutOpen && <GoOutModal onClose={() => setGoOutOpen(false)} onSubmit={(reason, min) => { setGoOutOpen(false); startGoOut(staff.employeeId, reason, min); }} />}
@@ -331,13 +335,14 @@ function InlineLeave({ staffId, submitLeave }: { staffId: string; submitLeave: R
         </div>
       </div>
       <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">My Recent Requests</p>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">My Recent Requests</p>
         {mine.length === 0 ? <p className="text-sm text-slate-400">No requests yet.</p> : (
           <div className="space-y-1.5">
             {mine.map((r) => (
               <div key={r.recordId} className="flex items-center justify-between text-sm">
                 <span className="text-slate-600">{r.leaveType} · {r.fromDate}</span>
                 <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-semibold", r.status === "Approved" ? "bg-emerald-50 text-emerald-700" : r.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700")}>{r.status}</span>
+                {r.comment && <p className="mt-1 rounded bg-slate-50 px-2 py-1 text-xs text-slate-600"><b>Reviewer note:</b> {r.comment}</p>}
               </div>
             ))}
           </div>

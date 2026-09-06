@@ -26,6 +26,7 @@ export function Payments() {
   const [payFor, setPayFor] = useState<string | null>(null);   // sessionId
   const [advanceFor, setAdvanceFor] = useState<string | null>(null);
   const [advanceAmt, setAdvanceAmt] = useState("");
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -169,8 +170,14 @@ export function Payments() {
             subtitle={`${st.fullName} · ${st.employeeId}`} icon="handCoin"
             footer={<>
               <Button variant="ghost" onClick={() => setPayFor(null)}>Cancel</Button>
-              <Button variant="success" icon="check"
-                onClick={() => { paySession(sess.id); setPayFor(null); }}>Confirm Payment</Button>
+              <Button variant="success" icon="check" disabled={paymentSubmitting}
+                onClick={() => {
+                  if (paymentSubmitting) return;
+                  setPaymentSubmitting(true);
+                  paySession(sess.id);
+                  setPaymentSubmitting(false);
+                  setPayFor(null);
+                }}>{paymentSubmitting ? "Processing..." : "Confirm Payment"}</Button>
             </>}>
             <div className="space-y-3">
               <Line label="Worked" value={formatDuration(calc.grossMin)} />

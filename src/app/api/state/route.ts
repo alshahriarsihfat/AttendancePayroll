@@ -12,7 +12,7 @@ type StatePayload = {
 
 export async function GET() {
   const state = await prisma.appState.findUnique({ where: { key: STATE_KEY } });
-  return Response.json({ data: state?.data ?? null, session: state?.session ?? null });
+  return Response.json({ data: state?.data ?? null });
 }
 
 export async function PUT(request: Request) {
@@ -26,11 +26,11 @@ export async function PUT(request: Request) {
     create: {
       key: STATE_KEY,
       data: payload.data as Prisma.InputJsonValue,
-      session: payload.session == null ? Prisma.JsonNull : payload.session as Prisma.InputJsonValue,
+      session: Prisma.JsonNull,
     },
     update: {
       data: payload.data as Prisma.InputJsonValue,
-      session: payload.session == null ? Prisma.JsonNull : payload.session as Prisma.InputJsonValue,
+      session: Prisma.JsonNull,
     },
   });
 

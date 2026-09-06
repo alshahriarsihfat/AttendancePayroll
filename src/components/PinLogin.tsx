@@ -10,18 +10,35 @@ export function PinLogin() {
   const [error, setError] = useState("");
   const [shake, setShake] = useState(false);
   const [showPass, setShowPass] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const passRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { if (shake) { const t = setTimeout(() => setShake(false), 420); return () => clearTimeout(t); } }, [shake]);
 
-  const submit = () => {
+  const submit = async () => {
+    if (submitting) return;
     setError("");
     const res = tryLogin(username, password);
-    if (res.type === "admin") loginAdmin();
-    else if (res.type === "employee") loginEmployee(res.staffId);
-    else { setError(res.reason); setShake(true); }
+    if (res.type === "invalid") { setError(res.reason); setShake(true); return; }
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!response.ok) throw new Error("Unable to sign in. Please try again.");
+      if (res.type === "admin") loginAdmin();
+      else loginEmployee(res.staffId);
+      window.location.assign("/");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to sign in. Please try again.");
+      setShake(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
-  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") submit(); };
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") void submit(); };
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-100 p-4">
@@ -110,8 +127,8 @@ export function PinLogin() {
           </div>
 
           {/* Submit */}
-          <button type="button" onClick={submit} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 text-[15px] font-bold text-white shadow-lg shadow-teal-500/30 transition hover:from-teal-700 hover:to-emerald-700 active:scale-[0.99]">
-            <Icon name="power" size={18} /> Login
+          <button type="button" onClick={() => void submit()} disabled={submitting} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 text-[15px] font-bold text-white shadow-lg shadow-teal-500/30 transition hover:from-teal-700 hover:to-emerald-700 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60">
+            <Icon name="power" size={18} /> {submitting ? "Signing in..." : "Login"}
           </button>
 
           <p className="mt-6 text-center text-[11px] text-slate-400">

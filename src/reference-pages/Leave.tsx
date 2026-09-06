@@ -133,7 +133,7 @@ function MyBalances({ staffId }: { staffId: string }) {
                 <span className="tabular-nums text-slate-500"><span className="font-semibold text-emerald-600">{rem}</span> / {b.entitledDays}d left</span>
               </div>
               <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500" style={{ width: `${Math.min(100, (rem / b.entitledDays) * 100)}%` }} />
+                <div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-500" style={{ width: `${Math.min(100, (rem / b.entitledDays) * 100)}%` }} />
               </div>
             </div>
           );
