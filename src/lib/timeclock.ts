@@ -242,7 +242,7 @@ export function computeSession(
     mealRemaining, restRemaining, poolsExhausted,
     overBreakMin, overtimeMin,
     hourlyRate: rate, overtimeRate, grossPay: payRound(grossPay), overBreakDeduction: payRound(overBreakDeduction),
-    overtimePay: payRound(overtimePay), netPay: payRound(netPay), breakRemainingSec,
+    overtimePay: payRound(overtimePay), netPay: payRound(Math.max(0, netPay)), breakRemainingSec,
     isOngoing: !session.timeOut, lateMin, isLate: lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10),
     extraTimeMin, extraTimeActive,
     goOutMin, activeGoOutReason, activeElapsedSec,

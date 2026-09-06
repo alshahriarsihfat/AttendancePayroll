@@ -21,7 +21,7 @@ export async function GET() {
           recordId: staff.id,
           employeeId: staff.employeeId,
           username: staff.username,
-          password: staff.password,
+          password: "",
           fullName: staff.fullName,
           email: staff.email ?? "",
           phone: staff.phone ?? "",

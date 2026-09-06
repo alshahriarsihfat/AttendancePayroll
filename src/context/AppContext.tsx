@@ -96,7 +96,7 @@ function postJson(path: string, body: unknown, method = "POST") {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }).catch(() => new Response(null, { status: 503 }));
 }
 
 /**
@@ -113,7 +113,7 @@ function migrate(old: Dataset): Dataset {
       ...s,
       employeeId: s.employeeId || "",
       username: (s.username || (s.employeeId || "").toLowerCase() || "").toString(),
-      password: (s.password || (s.employeeId || "").slice(-4) || "1111").toString(),
+      password: "",
       role: (s.role === "SUPERVISOR" ? "SUPERVISOR" : "STAFF") as Employee["role"],
       salaryType: (s.salaryType ?? "Daily") as Employee["salaryType"],
       shiftStart: s.shiftStart || "09:00 AM",
@@ -166,11 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!hydrated) return;
     const timer = window.setTimeout(() => {
-      void fetch(STATE_ENDPOINT, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data }),
-      });
+      void postJson(STATE_ENDPOINT, { data }, "PUT");
     }, 250);
     return () => window.clearTimeout(timer);
   }, [data, session, hydrated]);
@@ -219,7 +215,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     audit("LOGIN", "Session", s.employeeId, `${s.fullName} signed in as ${s.role}.`);
   }, [data.staff, audit, toast]);
   const logout = useCallback(() => {
-    void fetch("/api/auth", { method: "DELETE" });
+    void fetch("/api/auth", { method: "DELETE" }).catch(() => undefined);
     setSession(null);
     setView({ page: "dashboard" });
     window.location.assign("/login");

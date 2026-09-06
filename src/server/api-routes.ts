@@ -43,37 +43,46 @@ export async function POST_clock(req: Request) {
 
     // ---- CLOCK IN ----
     if (action === "in") {
-      const existing = await prisma.timeSession.findUnique({
-        where: { staffId_date: { staffId: employeeId, date: today } },
-      });
-      if (existing) {
-        return Response.json({ error: "Already clocked in today" }, { status: 409 });
-      }
-      // Late detection vs scheduled shift start
-      const [hh, mm] = parseShiftTime(staff.shiftStart);
-      const shiftStart = new Date(today); shiftStart.setHours(hh, mm, 0, 0);
-      const lateMin = now > shiftStart ? Math.round((now.getTime() - shiftStart.getTime()) / 60000) : 0;
-
-      const session = await prisma.timeSession.create({
-        data: { staffId: employeeId, date: today, timeIn: now },
-      });
-
-      await prisma.auditLog.create({
-        data: {
-          action: "CLOCK_IN", entityType: "TimeSession", entityId: session.id,
-          actorName: staff.fullName, actorRole: staff.role.toString(),
-          summary: `${staff.fullName} clocked in${lateMin > 0 ? ` (${lateMin}m late)` : " on time"}`,
-          managedBy,
-        },
-      });
-
-      // Flag for manager approval if late >= 10 min
-      if (lateMin >= 10) {
-        await prisma.approvalRequest.create({
-          data: { staffId: employeeId, sessionId: session.id, type: "late", deltaMin: lateMin, date: today },
+      const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        const existing = await tx.timeSession.findUnique({
+          where: { staffId_date: { staffId: employeeId, date: today } },
         });
-      }
-      return Response.json({ session, lateMin });
+        if (existing) return { error: "Already clocked in today" as const };
+
+        // Close forgotten prior-day sessions at the scheduled shift end before
+        // creating today's unique staff/date row.
+        const openSessions = await tx.timeSession.findMany({
+          where: { staffId: employeeId, timeOut: null, date: { lt: today } },
+        });
+        for (const open of openSessions) {
+          const [endHour, endMinute] = parseShiftTime(staff.shiftEnd);
+          const autoOut = new Date(open.date);
+          autoOut.setHours(endHour, endMinute, 0, 0);
+          await tx.timeSession.update({
+            where: { id: open.id },
+            data: { timeOut: autoOut, completed: true, autoClockedOut: true },
+          });
+        }
+
+        const [hh, mm] = parseShiftTime(staff.shiftStart);
+        const shiftStart = new Date(today); shiftStart.setHours(hh, mm, 0, 0);
+        const lateMin = now > shiftStart ? Math.round((now.getTime() - shiftStart.getTime()) / 60000) : 0;
+        const session = await tx.timeSession.create({ data: { staffId: employeeId, date: today, timeIn: now } });
+        await tx.auditLog.create({
+          data: {
+            action: "CLOCK_IN", entityType: "TimeSession", entityId: session.id,
+            actorName: staff.fullName, actorRole: staff.role.toString(),
+            summary: `${staff.fullName} clocked in${lateMin > 0 ? ` (${lateMin}m late)` : " on time"}`,
+            managedBy,
+          },
+        });
+        if (lateMin >= 10) {
+          await tx.approvalRequest.create({ data: { staffId: employeeId, sessionId: session.id, type: "late", deltaMin: lateMin, date: today } });
+        }
+        return { session, lateMin };
+      });
+      if ("error" in result) return Response.json({ error: result.error }, { status: 409 });
+      return Response.json(result);
     }
 
     // ---- All other actions require an active session ----
@@ -202,10 +211,10 @@ export async function POST_payment(req: Request) {
 
     // ---- Wage calculation (mirrors frontend computeSession) ----
     const staff = session.staff;
-    const shiftHours = parseShiftHours(staff.shiftStart, staff.shiftEnd);
-    const hourlyRate = getHourlyRate(staff, shiftHours);
+    const shiftHours = payRound(parseShiftHours(staff.shiftStart, staff.shiftEnd));
+    const hourlyRate = payRound(getHourlyRate(staff, shiftHours));
 
-    const workedMin = (session.timeOut.getTime() - session.timeIn.getTime()) / 60000;
+    const workedMin = payRound(Math.max(0, (session.timeOut.getTime() - session.timeIn.getTime()) / 60000), 4);
     const breaks: Segment[] = JSON.parse(JSON.stringify(session.breaks ?? "[]"));
     const goOuts: GoOut[] = JSON.parse(JSON.stringify(session.goOuts ?? "[]"));
 
@@ -220,7 +229,7 @@ export async function POST_payment(req: Request) {
     }
     const paidAllow = staff.mealBreakMin + staff.restMin;   // 45
     const paidTaken = mealMin + restMin;
-    const overBreakMin = Math.max(0, paidTaken - paidAllow) + unpaidMin;
+    const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
 
     // Overtime: minutes past scheduled shift end
     const [eh, em] = parseShiftTime(staff.shiftEnd);
@@ -233,11 +242,11 @@ export async function POST_payment(req: Request) {
     const grossPay = payRound(hourlyRate * (basicMin / 60));
     const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
     const overtimePay = payRound(hourlyRate * 1.25 * (overtimeMin / 60));
-    const netEarned = payRound(grossPay + overtimePay - overBreakDeduction);
+    const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
 
     // ---- AUTO ADVANCE ADJUSTMENT ----
-    const advanceAdjusted = payRound(Math.min(staff.advance, netEarned));
-    const netPay = payRound(netEarned - advanceAdjusted);
+    const advanceAdjusted = payRound(Math.min(Math.max(0, staff.advance), netEarned));
+    const netPay = payRound(Math.max(0, netEarned - advanceAdjusted));
 
     // ---- ATOMIC TRANSACTION ----
     const payment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -248,8 +257,8 @@ export async function POST_payment(req: Request) {
           periodLabel: `${session.date.toISOString().slice(0, 10)} · Day`,
           dutyHours: payRound(shiftHours), workedMin: Math.round(workedMin),
           breakMin: Math.round(mealMin + restMin), overBreakMin: Math.round(overBreakMin),
-          overtimeMin, hourlyRate: payRound(hourlyRate), grossPay,
-          overtimePay, overBreakDeduction,
+          overtimeMin: Math.max(0, overtimeMin), hourlyRate: payRound(hourlyRate), grossPay: payRound(grossPay),
+          overtimePay: payRound(overtimePay), overBreakDeduction: payRound(overBreakDeduction),
           advanceAdjusted, netPay,
           status: "PAID", paidBy: body.data.paidBy,
         },

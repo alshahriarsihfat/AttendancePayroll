@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { useNow } from "../hooks/useNow";
 import { PhotoAvatar } from "../components/PhotoAvatar";
@@ -21,6 +21,8 @@ export function ClockTerminal() {
   const [outConfirm, setOutConfirm] = useState(false);
   const [goOutOpen, setGoOutOpen] = useState(false);
   const [clockActionBusy, setClockActionBusy] = useState(false);
+  const clockInLock = useRef(false);
+  const clockOutLock = useRef(false);
 
   const staff = session?.staffId ? staffById(session.staffId) : undefined;
   const shift = staff ? empShift(staff) : null;
@@ -55,7 +57,8 @@ export function ClockTerminal() {
   const nextShiftTime = formatTime12(new Date(nextShift).toISOString());
 
   const doClockIn = () => {
-    if (clockActionBusy) return;
+    if (clockInLock.current) return;
+    clockInLock.current = true;
     setClockActionBusy(true);
     const res = clockIn(staff.employeeId);
     if (res.ok) {
@@ -63,7 +66,7 @@ export function ClockTerminal() {
       if (res.isLate) setModal({ open: true, kind: "late", minutes: res.lateMin });
       else setModal({ open: true, kind: "quote", quote: pickRandom(MOTIVATION_QUOTES).text });
     }
-    setClockActionBusy(false);
+    window.setTimeout(() => { clockInLock.current = false; setClockActionBusy(false); }, 750);
   };
 
   return (
@@ -132,9 +135,9 @@ export function ClockTerminal() {
 
         {/* ===== CLOCK TAB ===== */}
         {!onLeave && tab === "clock" && (
-          <div key="clock" className="tab-panel">
+              <div key="clock" className="tab-panel">
             {/* Active tracking / countdown card */}
-            <div className={cn("mt-5 overflow-hidden rounded-2xl shadow-lg", isDone ? "bg-gradient-to-br from-indigo-600 to-blue-700" : statusBg(calc.clockStatus))}>
+            <div className={cn("mt-5 overflow-hidden rounded-2xl shadow-lg", isDone ? "bg-linear-to-br from-indigo-600 to-blue-700" : statusBg(calc.clockStatus))}>
               <div className="p-6 text-center text-white">
                 {isOff ? (
                   beforeWindow ? (
@@ -261,7 +264,8 @@ export function ClockTerminal() {
         earlyMin={earlyDepartureMin}
         onClose={() => setOutConfirm(false)}
         onConfirm={() => {
-          if (clockActionBusy) return;
+          if (clockOutLock.current) return;
+          clockOutLock.current = true;
           setClockActionBusy(true);
           setOutConfirm(false);
           const res = clockOut(staff.employeeId);
@@ -270,7 +274,7 @@ export function ClockTerminal() {
             if (res.earlyDepartureMin >= 10) setModal({ open: true, kind: "early", minutes: res.earlyDepartureMin });
             else setModal({ open: true, kind: "praise" });
           }
-          setClockActionBusy(false);
+          window.setTimeout(() => { clockOutLock.current = false; setClockActionBusy(false); }, 750);
         }}
       />
       {goOutOpen && <GoOutModal onClose={() => setGoOutOpen(false)} onSubmit={(reason, min) => { setGoOutOpen(false); startGoOut(staff.employeeId, reason, min); }} />}
@@ -366,7 +370,7 @@ function CheckInHistory({ staffId }: { staffId: string }) {
           <p className="text-4xl font-bold tabular-nums text-emerald-600">{punctuality}%</p>
           <p className="pb-1 text-sm text-slate-500">{onTime}/{sessions.length} on-time arrivals</p>
         </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500" style={{ width: `${punctuality}%` }} /></div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-500" style={{ width: `${punctuality}%` }} /></div>
       </div>
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent Check-ins</p>
@@ -392,10 +396,10 @@ function CheckInHistory({ staffId }: { staffId: string }) {
 }
 
 function statusBg(s: string) {
-  if (s === "on-meal") return "bg-gradient-to-br from-orange-500 to-orange-600";
-  if (s === "on-rest") return "bg-gradient-to-br from-sky-500 to-sky-600";
-  if (s === "completed") return "bg-gradient-to-br from-slate-600 to-slate-700";
-  return "bg-gradient-to-br from-emerald-500 to-teal-600";
+  if (s === "on-meal") return "bg-linear-to-br from-orange-500 to-orange-600";
+  if (s === "on-rest") return "bg-linear-to-br from-sky-500 to-sky-600";
+  if (s === "completed") return "bg-linear-to-br from-slate-600 to-slate-700";
+  return "bg-linear-to-br from-emerald-500 to-teal-600";
 }
 function statusLabel(s: string) {
   if (s === "on-meal") return "On Meal Break";

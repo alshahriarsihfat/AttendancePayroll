@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Card, Button, Select, Input, EmptyState } from "../components/ui";
 import { PhotoAvatar } from "../components/PhotoAvatar";
@@ -27,6 +27,7 @@ export function Payments() {
   const [advanceFor, setAdvanceFor] = useState<string | null>(null);
   const [advanceAmt, setAdvanceAmt] = useState("");
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const paymentLock = useRef(false);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -134,7 +135,7 @@ export function Payments() {
             {ledger.map((p) => {
               const s = staffById(p.staffId);
               return (
-                <div key={p.id} className="flex items-center gap-3 px-4 py-3">
+                <div key={p.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                   <PhotoAvatar name={s?.fullName ?? "?"} photoUrl={s?.photoUrl} size={36} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-slate-900">{s?.fullName ?? p.staffId}</p>
@@ -142,12 +143,12 @@ export function Payments() {
                       {formatDate(p.paidAt ?? p.date)} · {p.periodLabel}
                     </p>
                   </div>
-                  <div className="text-right">
+                  <div className="shrink-0 text-right">
                     <p className="text-sm font-bold tabular-nums text-emerald-600">{formatBDT(p.netPay)}</p>
                     <p className="text-[11px] text-slate-400">{formatDuration(p.workedMin)}</p>
                   </div>
                   {/* On-demand print — never automatic */}
-                  <Button size="sm" variant="ghost" icon="receipt" onClick={() => navigate("payslip", { id: p.id })} title="View & Print">
+                  <Button size="sm" variant="ghost" icon="receipt" className="shrink-0" onClick={() => navigate("payslip", { id: p.id })} title="View & Print">
                     <span className="hidden sm:inline">View &amp; Print</span>
                   </Button>
                 </div>
@@ -172,11 +173,12 @@ export function Payments() {
               <Button variant="ghost" onClick={() => setPayFor(null)}>Cancel</Button>
               <Button variant="success" icon="check" disabled={paymentSubmitting}
                 onClick={() => {
-                  if (paymentSubmitting) return;
+                  if (paymentLock.current) return;
+                  paymentLock.current = true;
                   setPaymentSubmitting(true);
                   paySession(sess.id);
-                  setPaymentSubmitting(false);
                   setPayFor(null);
+                  window.setTimeout(() => { paymentLock.current = false; setPaymentSubmitting(false); }, 750);
                 }}>{paymentSubmitting ? "Processing..." : "Confirm Payment"}</Button>
             </>}>
             <div className="space-y-3">

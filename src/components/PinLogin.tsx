@@ -4,7 +4,7 @@ import { Icon } from "../components/icons";
 import { cn } from "../lib/utils";
 
 export function PinLogin() {
-  const { tryLogin, loginAdmin, loginEmployee } = useApp();
+  const { loginAdmin, loginEmployee } = useApp();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -18,8 +18,6 @@ export function PinLogin() {
   const submit = async () => {
     if (submitting) return;
     setError("");
-    const res = tryLogin(username, password);
-    if (res.type === "invalid") { setError(res.reason); setShake(true); return; }
     setSubmitting(true);
     try {
       const response = await fetch("/api/auth", {
@@ -28,8 +26,10 @@ export function PinLogin() {
         body: JSON.stringify({ username, password }),
       });
       if (!response.ok) throw new Error("Unable to sign in. Please try again.");
-      if (res.type === "admin") loginAdmin();
-      else loginEmployee(res.staffId);
+      const payload = await response.json() as { session?: { role?: string; staffId?: string } };
+      if (payload.session?.role === "ADMIN") loginAdmin();
+      else if (payload.session?.staffId) loginEmployee(payload.session.staffId);
+      else throw new Error("Unable to establish a valid session.");
       window.location.assign("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in. Please try again.");
@@ -43,11 +43,11 @@ export function PinLogin() {
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-100 p-4">
       {/* Ambient modern background */}
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-teal-50 via-white to-emerald-50" />
-      <div className="pointer-events-none absolute -left-40 top-0 h-[28rem] w-[28rem] rounded-full bg-emerald-300/30 blur-[100px]" />
-      <div className="pointer-events-none absolute -right-40 bottom-0 h-[28rem] w-[28rem] rounded-full bg-teal-300/30 blur-[100px]" />
+      <div className="pointer-events-none absolute inset-0 bg-linear-to-br from-teal-50 via-white to-emerald-50" />
+      <div className="pointer-events-none absolute -left-40 top-0 h-112 w-md rounded-full bg-emerald-300/30 blur-[100px]" />
+      <div className="pointer-events-none absolute -right-40 bottom-0 h-112 w-md rounded-full bg-teal-300/30 blur-[100px]" />
 
-      <div className="relative grid w-full max-w-4xl overflow-hidden rounded-[2rem] bg-white shadow-2xl shadow-emerald-900/10 ring-1 ring-black/5 lg:grid-cols-2">
+      <div className="relative grid w-full max-w-4xl overflow-hidden rounded-4xl bg-white shadow-2xl shadow-emerald-900/10 ring-1 ring-black/5 lg:grid-cols-2">
         {/* ===== LEFT — Brand panel ===== */}
         <aside className="relative hidden flex-col justify-between overflow-hidden p-10 text-white lg:flex" style={{ background: "linear-gradient(160deg, #0f766e 0%, #0d9488 45%, #047857 100%)" }}>
           <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
@@ -127,7 +127,7 @@ export function PinLogin() {
           </div>
 
           {/* Submit */}
-          <button type="button" onClick={() => void submit()} disabled={submitting} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 text-[15px] font-bold text-white shadow-lg shadow-teal-500/30 transition hover:from-teal-700 hover:to-emerald-700 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60">
+          <button type="button" onClick={() => void submit()} disabled={submitting} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-linear-to-r from-teal-600 to-emerald-600 text-[15px] font-bold text-white shadow-lg shadow-teal-500/30 transition hover:from-teal-700 hover:to-emerald-700 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60">
             <Icon name="power" size={18} /> {submitting ? "Signing in..." : "Login"}
           </button>
 

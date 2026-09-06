@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Card, Button, Select, Input, Field, Textarea, EmptyState } from "../components/ui";
 import { PhotoAvatar } from "../components/PhotoAvatar";
@@ -20,6 +20,7 @@ export function Leave() {
   const [modal, setModal] = useState(false);
   const [noteFor, setNoteFor] = useState<{ id: string; status: "Approved" | "Rejected" } | null>(null);
   const [noteText, setNoteText] = useState("");
+  const noteSubmitting = useRef(false);
 
   const myId = role === "STAFF" ? session?.staffId : undefined;
   const requests = useMemo(() => {
@@ -103,8 +104,14 @@ export function Leave() {
           subtitle="Add an optional reviewer note for the staff member" icon="calendar"
           footer={<>
             <Button variant="ghost" onClick={() => setNoteFor(null)}>Cancel</Button>
-            <Button variant={noteFor.status === "Approved" ? "success" : "secondary"} icon={noteFor.status === "Approved" ? "check" : "x"}
-              onClick={() => { decideLeave(noteFor.id, noteFor.status, noteText.trim() || undefined); setNoteFor(null); }}>
+            <Button variant={noteFor.status === "Approved" ? "success" : "secondary"} icon={noteFor.status === "Approved" ? "check" : "x"} disabled={noteSubmitting.current}
+              onClick={() => {
+                if (noteSubmitting.current) return;
+                noteSubmitting.current = true;
+                decideLeave(noteFor.id, noteFor.status, noteText.trim() || undefined);
+                setNoteFor(null);
+                window.setTimeout(() => { noteSubmitting.current = false; }, 750);
+              }}>
               {noteFor.status === "Approved" ? "Approve" : "Reject"}
             </Button>
           </>}>

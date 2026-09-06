@@ -8,7 +8,7 @@ type AuthSession = { role: "ADMIN" | "SUPERVISOR" | "STAFF"; staffId?: string; n
 
 const COOKIE_NAME = "attendance_session";
 const MAX_AGE = 8 * 60 * 60;
-const secret = () => process.env.AUTH_SECRET ?? "AttendancePayroll-development-secret";
+const secret = () => process.env.AUTH_SECRET ?? (process.env.NODE_ENV === "production" ? "" : "AttendancePayroll-development-secret");
 const secureCookie = (request: Request) => new URL(request.url).protocol === "https:" ? "; Secure" : "";
 
 function sign(payload: string) {
@@ -45,18 +45,19 @@ export async function POST(request: Request) {
   const username = body.username?.trim().toLowerCase() ?? "";
   const password = body.password ?? "";
   let session: AuthSession | null = null;
+  if (!secret()) return Response.json({ error: "Authentication is not configured" }, { status: 503 });
 
   if (username === ADMIN.USERNAME && password === ADMIN.PASSWORD) {
     session = { role: "ADMIN", name: "Admin", loginAt: new Date().toISOString(), exp: Math.floor(Date.now() / 1000) + MAX_AGE };
   } else {
-    const state = await prisma.appState.findUnique({ where: { key: "default" }, select: { data: true } });
-    const records = (state?.data as { staff?: StaffRecord[] } | null)?.staff ?? [];
-    const staff = records.find((record) => record.username.toLowerCase() === username && record.password === password && record.isActive);
-    if (staff) session = { role: staff.role, staffId: staff.employeeId, name: staff.fullName, loginAt: new Date().toISOString(), exp: Math.floor(Date.now() / 1000) + MAX_AGE };
+    const staff = await prisma.staff.findUnique({ where: { username } });
+    if (staff && staff.password === password && staff.isActive) {
+      session = { role: staff.role, staffId: staff.employeeId, name: staff.fullName, loginAt: new Date().toISOString(), exp: Math.floor(Date.now() / 1000) + MAX_AGE };
+    }
   }
 
   if (!session) return Response.json({ error: "Invalid credentials" }, { status: 401 });
-  const response = Response.json({ ok: true });
+  const response = Response.json({ ok: true, session: { role: session.role, staffId: session.staffId, name: session.name, loginAt: session.loginAt } });
   response.headers.append("Set-Cookie", `${COOKIE_NAME}=${encode(session)}; Path=/; Max-Age=${MAX_AGE}; HttpOnly; SameSite=Lax${secureCookie(request)}`);
   return response;
 }
