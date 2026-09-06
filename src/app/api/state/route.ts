@@ -12,7 +12,44 @@ type StatePayload = {
 
 export async function GET() {
   const state = await prisma.appState.findUnique({ where: { key: STATE_KEY } });
-  return Response.json({ data: state?.data ?? null });
+  const staffRows = await prisma.staff.findMany({ orderBy: { employeeId: "asc" } });
+  const snapshot = state?.data as { staff?: unknown } | null;
+  const data = snapshot && staffRows.length > 0
+    ? {
+        ...snapshot,
+        staff: staffRows.map((staff) => ({
+          recordId: staff.id,
+          employeeId: staff.employeeId,
+          username: staff.username,
+          password: staff.password,
+          fullName: staff.fullName,
+          email: staff.email ?? "",
+          phone: staff.phone ?? "",
+          department: staff.department,
+          jobTitle: staff.jobTitle,
+          section: staff.section,
+          counter: staff.counter,
+          joinDate: staff.joinDate.toISOString().slice(0, 10),
+          endDate: staff.endDate?.toISOString().slice(0, 10) ?? null,
+          role: staff.role === "SUPERVISOR" ? "SUPERVISOR" : "STAFF",
+          salaryType: staff.salaryType.charAt(0) + staff.salaryType.slice(1).toLowerCase(),
+          baseSalary: staff.baseSalary,
+          dailyRate: staff.dailyRate,
+          hourlyRate: staff.hourlyRate,
+          shiftStart: staff.shiftStart,
+          shiftEnd: staff.shiftEnd,
+          mealBreakMin: staff.mealBreakMin,
+          restMin: staff.restMin,
+          shiftId: "SH-FULL",
+          photoUrl: staff.photoUrl ?? "",
+          status: staff.status === "ON_LEAVE" ? "On-leave" : staff.status === "TERMINATED" ? "Terminated" : "Active",
+          isActive: staff.isActive,
+          arrears: staff.arrears,
+          advance: staff.advance,
+        })),
+      }
+    : state?.data ?? null;
+  return Response.json({ data });
 }
 
 export async function PUT(request: Request) {

@@ -91,6 +91,14 @@ interface AppContextValue {
 const Ctx = createContext<AppContextValue | null>(null);
 const STATE_ENDPOINT = "/api/state";
 
+function postJson(path: string, body: unknown, method = "POST") {
+  return fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 /**
  * Migrate older cached datasets so they never crash the new code:
  *  - backfill `username` / `password` (manual-credential login)
@@ -148,6 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((payload: { session?: Session | null } | null) => {
         if (cancelled) return;
         setSession(payload?.session ?? null);
+        if (payload?.session?.role === "SUPERVISOR") setView({ page: "terminal" });
         setHydrated(true);
       })
       .catch(() => setHydrated(true));
@@ -244,6 +253,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (todaySession(staffId)) { toast("Already clocked in today.", "info"); return { ok: false, lateMin: 0, isLate: false }; }
     const s: TimeSession = { id: uid("SES"), staffId, date: todayKey(), timeIn: nowISO(), timeOut: null, breaks: [], extraTime: [], goOuts: [], completed: false };
     setData((d) => ({ ...d, sessions: [...d.sessions, s] }));
+    void postJson("/api/clock", { employeeId: staffId, action: "in" }).then(async (response) => {
+      if (!response.ok) {
+        toast("Clock-in was not saved to the server.", "error");
+        return;
+      }
+      const payload = await response.json() as { session?: { id?: string } };
+      if (payload.session?.id) {
+        setData((current) => ({
+          ...current,
+          sessions: current.sessions.map((item) => item.id === s.id ? { ...item, id: payload.session!.id! } : item),
+        }));
+      }
+    });
     // late detection vs scheduled shift start
     let lateMin = 0;
     if (emp) {
@@ -280,6 +302,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Close any open go-out too — otherwise the staff stays "on go-out" forever.
       goOuts: (x.goOuts ?? []).map((g) => (g.end ? g : { ...g, end: outISO })),
     }));
+    void postJson("/api/clock", { employeeId: staffId, action: "out" }).then((response) => {
+      if (!response.ok) toast("Clock-out was not saved to the server.", "error");
+    });
     const earlyStr = formatDuration(earlyDepartureMin);
     audit("CLOCK_OUT", "Session", staffId, `${emp?.fullName ?? staffId} clocked out${earlyDepartureMin ? ` (${earlyStr} early)` : ""}.`);
     toast(earlyDepartureMin >= 10 ? `Early departure — left ${earlyStr} before shift end.` : "Clocked out on time. Thank you!", earlyDepartureMin >= 10 ? "error" : "success");
@@ -309,6 +334,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Guard: cannot start a break while on a go-out.
     if ((s.goOuts ?? []).some((g) => !g.end)) { toast("Return from your go-out first.", "error"); return; }
     updateSession(staffId, (x) => ({ ...x, breaks: [...x.breaks, { id: uid("BK"), type, start: nowISO(), end: null }] }));
+    void postJson("/api/clock", { employeeId: staffId, action: "break_start", breakType: type }).then((response) => {
+      if (!response.ok) toast("Break start was not saved to the server.", "error");
+    });
     audit("BREAK_START", "Session", staffId, `${staffById(staffId)?.fullName ?? staffId} started ${type} break.`);
     const label = type === "meal" ? "Meal" : type === "rest" ? "Rest" : type === "unpaid" ? "Unpaid" : "Go-Out";
     toast(`${label} started${type === "unpaid" ? " — deducted from pay" : type === "goout" ? " — tracked, no deduction" : ""}.`, "info");
@@ -316,6 +344,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const endBreak = useCallback((staffId: string) => {
     updateSession(staffId, (x) => ({ ...x, breaks: x.breaks.map((b) => (b.end ? b : { ...b, end: nowISO() })) }));
+    void postJson("/api/clock", { employeeId: staffId, action: "break_end" }).then((response) => {
+      if (!response.ok) toast("Break end was not saved to the server.", "error");
+    });
     audit("BREAK_END", "Session", staffId, `${staffById(staffId)?.fullName ?? staffId} returned from break.`);
     toast("Back to work.", "success");
   }, [updateSession, audit, toast, staffById]);
@@ -333,12 +364,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ? { ...x, goOuts: [...(x.goOuts ?? []), { id: uid("GO"), start: nowISO(), end: null, reason, estimatedMin }] }
         : x),
     }));
+    void postJson("/api/clock", { employeeId: staffId, action: "goout_start", goOutReason: reason, goOutEstimatedMin: estimatedMin }).then((response) => {
+      if (!response.ok) toast("Go-out was not saved to the server.", "error");
+    });
     audit("GO_OUT_START", "Session", staffId, `${staffById(staffId)?.fullName ?? staffId} went out: ${reason}.`);
     toast("Go-Out started — time tracked, no deduction.", "info");
   }, [todaySession, audit, toast, staffById]);
 
   const endGoOut = useCallback((staffId: string) => {
     updateSession(staffId, (x) => ({ ...x, goOuts: (x.goOuts ?? []).map((g) => (g.end ? g : { ...g, end: nowISO() })) }));
+    void postJson("/api/clock", { employeeId: staffId, action: "goout_end" }).then((response) => {
+      if (!response.ok) toast("Go-out return was not saved to the server.", "error");
+    });
     audit("GO_OUT_END", "Session", staffId, `${staffById(staffId)?.fullName ?? staffId} returned from go-out.`);
     toast("Welcome back!", "success");
   }, [updateSession, audit, toast, staffById]);
@@ -376,6 +413,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       overBreakDeduction: payRound(calc.overBreakDeduction), netPay: finalPayable,
       status: "Paid", paidBy: session?.name ?? "Admin",
     };
+    void postJson("/api/payments", { sessionId, paidBy: session?.name ?? "Admin" }).then((response) => {
+      if (!response.ok) toast("Payment was not saved to the server.", "error");
+    });
     setData((d) => {
       const next = {
         ...d,
@@ -477,13 +517,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const amt = payRound(amount);
     if (!staff) { toast("Staff not found.", "error"); return; }
     if (!Number.isFinite(amt) || amt <= 0) { toast("Enter a valid amount.", "error"); return; }
+    void postJson("/api/advance", { staffId, amount: amt, createdBy: session?.name ?? "Admin" }).then((response) => {
+      if (!response.ok) toast("Advance was not saved to the server.", "error");
+    });
     setData((d) => ({
       ...d,
       staff: d.staff.map((e) => (e.employeeId === staffId ? { ...e, advance: payRound((e.advance ?? 0) + amt) } : e)),
     }));
     audit("TAKE_ADVANCE", "Payment", staffId, `Advance ৳${amt.toFixed(2)} given to ${staff.fullName}. Will be deducted from next payout.`);
     toast(`Advance ৳${amt.toFixed(2)} logged for ${staff.fullName}.`, "success");
-  }, [guard, staffById, audit, toast]);
+  }, [guard, staffById, session, audit, toast]);
 
   // ---- staff CRUD ----
   // Maximum of SUPERVISOR_MAX hybrid supervisor/cashier accounts.
@@ -506,6 +549,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       mealBreakMin: Number(d.mealBreakMin) || 30, restMin: Number(d.restMin) || 15, shiftId: d.shiftId || "SH-FULL",
       photoUrl: d.photoUrl ?? "", status: "Active", isActive: true, arrears: 0, advance: 0,
     };
+    void postJson("/api/staff", s).then((response) => {
+      if (!response.ok) toast("Staff was not saved to the server.", "error");
+    });
     setData((st) => ({ ...st, staff: [...st.staff, s] }));
     audit("CREATE", "Staff", s.employeeId, `Added staff ${s.fullName} (${s.employeeId}).`);
     toast(`Staff ${s.fullName} added. Username: ${s.username}`, "success");
@@ -528,6 +574,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       baseSalary: Number(d.baseSalary ?? existing.baseSalary), dailyRate: Number(d.dailyRate ?? existing.dailyRate),
       hourlyRate: Number(d.hourlyRate ?? existing.hourlyRate), counter: d.counter ?? existing.counter,
     };
+    void postJson("/api/staff", next, "PUT").then((response) => {
+      if (!response.ok) toast("Staff changes were not saved to the server.", "error");
+    });
     setData((st) => ({ ...st, staff: st.staff.map((e) => (e.employeeId === id ? next : e)) }));
     audit("UPDATE", "Staff", id, `Updated ${existing.fullName}.`);
     toast("Staff updated.", "success");
@@ -537,6 +586,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const deactivateStaff = useCallback((id: string) => {
     if (!guard("manage.staff")) return;
     const s = data.staff.find((e) => e.employeeId === id);
+    void postJson("/api/staff", { employeeId: id }, "DELETE").then((response) => {
+      if (!response.ok) toast("Staff deactivation was not saved to the server.", "error");
+    });
     setData((st) => ({ ...st, staff: st.staff.map((e) => (e.employeeId === id ? { ...e, isActive: false, status: "Terminated", endDate: nowISO().slice(0, 10) } : e)) }));
     audit("DELETE", "Staff", id, `Deactivated ${s?.fullName ?? id}.`);
     toast(`${s?.fullName} deactivated.`, "info");
@@ -544,10 +596,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const assignCounter = useCallback((staffId: string, counter: number | null) => {
     if (!guard("manage.staff")) return;
-    setData((st) => ({ ...st, staff: st.staff.map((e) => (e.employeeId === staffId ? { ...e, counter } : e)) }));
+    const staff = data.staff.find((e) => e.employeeId === staffId);
+    if (!staff) return;
+    const next = { ...staff, counter };
+    void postJson("/api/staff", next, "PUT").then((response) => {
+      if (!response.ok) toast("Counter assignment was not saved to the server.", "error");
+    });
+    setData((st) => ({ ...st, staff: st.staff.map((e) => (e.employeeId === staffId ? next : e)) }));
     audit("UPDATE", "Staff", staffId, `Counter set to ${counter ?? "none"}.`);
     toast(`Counter ${counter ?? "cleared"}.`, "success");
-  }, [guard, audit, toast]);
+  }, [guard, data.staff, audit, toast]);
 
   // ---- leave ----
   const submitLeave = useCallback((d: { staffId: string; leaveType: LeaveType; fromDate: string; toDate: string; reason: string }): FormResult => {
