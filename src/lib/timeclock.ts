@@ -27,11 +27,15 @@ export function parseTime12(time: string): number {
   return h * 60 + parseInt(m[2], 10);
 }
 
-/** The live floor accepts clock actions throughout the 09:00-23:00 window. */
+/** The live floor accepts clock actions throughout the operating window (Dhaka context). */
 export function isWithinOperatingWindow(date: Date = new Date(), config: ConfigEntry[] = []): boolean {
-  const minutes = date.getHours() * 60 + date.getMinutes();
+  const dhakaStr = date.toLocaleTimeString("en-US", { timeZone: "Asia/Dhaka", hour12: false });
+  const [h, m] = dhakaStr.split(":").map(Number);
+  const minutes = h * 60 + m;
+
   const open = parseTime12(configValue(config, "FLOOR_OPEN_TIME", "09:00 AM"));
   const close = parseTime12(configValue(config, "FLOOR_CLOSE_TIME", "11:00 PM"));
+  
   return open <= close
     ? minutes >= open && minutes <= close
     : minutes >= open || minutes <= close;
@@ -75,10 +79,12 @@ export function hourlyRateFor(staff: Pick<Employee, "salaryType" | "hourlyRate" 
 /** Datetime (ms) of the scheduled shift start/end on a given clock-in day. */
 export function scheduledBoundary(timeInISO: string, boundaryMin: number): number {
   const d = new Date(timeInISO);
+  const dhakaDateStr = d.toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
+  const localDay = new Date(dhakaDateStr);
+  
   const timeInMinutes = d.getHours() * 60 + d.getMinutes();
-  d.setHours(0, 0, 0, 0);
-  const dayOffset = boundaryMin <= timeInMinutes ? 24 * 60 : 0;
-  return d.getTime() + (boundaryMin + dayOffset) * 60000;
+  const dayOffset = (boundaryMin < timeInMinutes && Math.abs(boundaryMin - timeInMinutes) > 12 * 60) ? 24 * 60 : 0;
+  return localDay.getTime() + (boundaryMin + dayOffset) * 60000;
 }
 
 export interface BreakTotals {
@@ -126,16 +132,12 @@ export interface SessionComputation {
   netPay: number;          // grossPay − overBreakDeduction + overtimePay
   breakRemainingSec: number;
   isOngoing: boolean;
-  /** Minutes late vs shift start (0 if on time / early). */
   lateMin: number;
   isLate: boolean;
-  /** Manual "Extra Time" minutes (toggle) — routed to the overtime queue. */
   extraTimeMin: number;
   extraTimeActive: boolean;
-  /** Paid Go-Out (field work) — tracked, no deduction. */
   goOutMin: number;
   activeGoOutReason: string | null;
-  /** Elapsed seconds of the active break/go-out (positive, for the live timer). */
   activeElapsedSec: number;
 }
 
@@ -170,26 +172,24 @@ export function computeSession(
   const bt = breakTotals(session, now);
 
   // ---- Dual-pool break engine ---------------------------------------------
-  // Meal pool (30m) and Rest pool (15m) share a 45m paid ceiling. Meal
-  // overage spills into the Rest pool; once the 45m ceiling is exceeded, all
-  // subsequent seconds are unpaid over-break → salary deduction.
   const totalPaidAllow = mealAllow + restAllow;
-  const totalPaidBreaks = bt.mealMin + bt.restMin;       // meal + rest combined
-  const poolOverrun = Math.max(0, totalPaidBreaks - totalPaidAllow); // unpaid over-break
-  const overBreakMin = poolOverrun + bt.unpaidMin;        // total deducted minutes
+  const totalPaidBreaks = bt.mealMin + bt.restMin;       
+  const poolOverrun = Math.max(0, totalPaidBreaks - totalPaidAllow); 
+  const overBreakMin = poolOverrun + bt.unpaidMin;        
   const poolsExhausted = totalPaidBreaks >= totalPaidAllow;
 
-  // Per-pool display balances (meal can borrow from rest).
   const mealOver = Math.max(0, bt.mealMin - mealAllow);
   const mealRemaining = Math.max(0, mealAllow - bt.mealMin);
   const restRemaining = Math.max(0, restAllow - bt.restMin - mealOver);
 
-  // Overtime = time worked beyond scheduled shift end.
+  // Overtime calculation with safe guard against pre-shift overtime
   const schedEnd = scheduledBoundary(session.timeIn, shift.endMin);
+  const schedStart = scheduledBoundary(session.timeIn, shift.startMin);
   const timeInMs = new Date(session.timeIn).getTime();
-  const autoOvertimeMin = endMs >= timeInMs && endMs > schedEnd ? Math.round((endMs - schedEnd) / 60000) : 0;
+  
+  const autoOvertimeMin = endMs > schedEnd && endMs > timeInMs ? Math.round((endMs - schedEnd) / 60000) : 0;
 
-  // Manual "Extra Time" segments (toggle) — added to the isolated overtime queue.
+  // Manual "Extra Time" segments
   let extraTimeMin = 0, extraTimeActive = false;
   for (const et of session.extraTime ?? []) {
     const endISO = et.end ?? new Date(now).toISOString();
@@ -198,19 +198,18 @@ export function computeSession(
   }
   const overtimeMin = autoOvertimeMin + extraTimeMin;
 
-  // Late detection vs shift start.
-  const schedStart = scheduledBoundary(session.timeIn, shift.startMin);
-  const lateMin = new Date(session.timeIn).getTime() > schedStart
-    ? Math.round((new Date(session.timeIn).getTime() - schedStart) / 60000) : 0;
+  // Late detection vs shift start
+  const lateMin = timeInMs > schedStart && Math.abs(timeInMs - schedStart) < 12 * 60 * 60000
+    ? Math.round((timeInMs - schedStart) / 60000) : 0;
 
-  // Pay: regular clocked time at basic rate, minus over-break, plus overtime.
+  // Pay calculation
   const basicMin = Math.max(0, grossMin - overtimeMin);
   const grossPay = rate * (basicMin / 60);
   const overBreakDeduction = rate * (overBreakMin / 60);
   const overtimePay = overtimeRate * (overtimeMin / 60);
   const netPay = grossPay - overBreakDeduction + overtimePay;
 
-  // ---- Paid Go-Out (field work) — tracked, never deducted -----------------
+  // ---- Paid Go-Out (field work) -------------------------------------------
   let goOutMin = 0, activeGoOutReason: string | null = null, activeGoOutStart: number | null = null;
   for (const g of session.goOuts ?? []) {
     const endISO = g.end ?? new Date(now).toISOString();
@@ -218,19 +217,17 @@ export function computeSession(
     if (!g.end) { activeGoOutReason = g.reason; activeGoOutStart = new Date(g.start).getTime(); }
   }
 
-  // Active break countdown — against the shared paid pool (or always over for unpaid).
+  // Active break countdown
   let breakRemainingSec = 0;
   let activeElapsedSec = 0;
   if (bt.activeBreak) {
     activeElapsedSec = Math.max(0, (now - new Date(bt.activeBreak.start).getTime()) / 1000);
     if (bt.activeBreak.type === "unpaid") {
-      breakRemainingSec = -activeElapsedSec; // unpaid → always negative (deducting)
+      breakRemainingSec = -activeElapsedSec; 
     } else {
-      // remaining paid time across the shared 45m pool
       breakRemainingSec = (totalPaidAllow - totalPaidBreaks) * 60;
     }
   } else if (activeGoOutStart !== null) {
-    // Go-out has no allowance — show elapsed time out (negative → renders as +MM:SS).
     activeElapsedSec = Math.max(0, (now - activeGoOutStart) / 1000);
     breakRemainingSec = -activeElapsedSec;
   }
@@ -244,15 +241,35 @@ export function computeSession(
   else clockStatus = "working";
 
   return {
-    clockStatus, grossMin, breakMin: bt.breakMin, mealMin: bt.mealMin, restMin: bt.restMin, unpaidMin: bt.unpaidMin,
-    paidMealAllow: mealAllow, paidRestAllow: restAllow, totalPaidAllow,
-    mealRemaining, restRemaining, poolsExhausted,
-    overBreakMin, overtimeMin,
-    hourlyRate: rate, overtimeRate, grossPay: payRound(grossPay), overBreakDeduction: payRound(overBreakDeduction),
-    overtimePay: payRound(overtimePay), netPay: payRound(Math.max(0, netPay)), breakRemainingSec,
-    isOngoing: !session.timeOut, lateMin, isLate: lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10),
-    extraTimeMin, extraTimeActive,
-    goOutMin, activeGoOutReason, activeElapsedSec,
+    clockStatus,
+    grossMin,
+    breakMin: bt.breakMin,
+    mealMin: bt.mealMin,
+    restMin: bt.restMin,
+    unpaidMin: bt.unpaidMin,
+    paidMealAllow: mealAllow,
+    paidRestAllow: restAllow,
+    totalPaidAllow,
+    mealRemaining,
+    restRemaining,
+    poolsExhausted,
+    overBreakMin,
+    overtimeMin,
+    hourlyRate: rate,
+    overtimeRate,
+    grossPay: payRound(grossPay),
+    overBreakDeduction: payRound(overBreakDeduction),
+    overtimePay: payRound(overtimePay),
+    netPay: payRound(Math.max(0, netPay)),
+    breakRemainingSec,
+    isOngoing: !session.timeOut,
+    lateMin,
+    isLate: lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10),
+    extraTimeMin,
+    extraTimeActive,
+    goOutMin,
+    activeGoOutReason,
+    activeElapsedSec,
   };
 }
 
@@ -264,7 +281,17 @@ export function nextShiftAt(startMin: number, fromMs: number = Date.now()): numb
   return todayStart > fromMs ? todayStart : todayStart + 24 * 3600_000;
 }
 
+/** Safe timezone-aware lookup matching Dhaka local business dates */
 export function sessionFor(sessions: TimeSession[], staffId: string, dateISO?: string): TimeSession | undefined {
-  const d = dateISO ?? new Date().toISOString().slice(0, 10);
-  return sessions.find((s) => s.staffId === staffId && s.date === d);
+  if (dateISO) {
+    return sessions.find((s) => s.staffId === staffId && s.date === dateISO);
+  }
+  const dhakaStr = new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
+  const d = new Date(dhakaStr);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const targetDate = `${yyyy}-${mm}-${dd}`;
+  
+  return sessions.find((s) => s.staffId === staffId && (s.date === targetDate || !s.completed));
 }
