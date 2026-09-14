@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
+import { hashPassword } from "@/lib/password";
+import { dbErrorResponse } from "@/lib/api-error";
 
 export const runtime = "nodejs";
 
@@ -37,7 +39,7 @@ function staffData(input: z.infer<typeof StaffSchema>) {
   return {
     employeeId: input.employeeId,
     username: input.username,
-    password: input.password,
+    password: hashPassword(input.password),
     fullName: input.fullName,
     email: input.email || null,
     phone: input.phone || null,
@@ -67,23 +69,35 @@ function staffData(input: z.infer<typeof StaffSchema>) {
 export async function POST(request: Request) {
   const parsed = StaffSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
-  const staff = await prisma.staff.create({ data: staffData(parsed.data) });
-  return Response.json(staff, { status: 201 });
+  try {
+    const staff = await prisma.staff.create({ data: staffData(parsed.data) });
+    return Response.json(staff, { status: 201 });
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }
 
 export async function PUT(request: Request) {
   const parsed = StaffSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
-  const staff = await prisma.staff.update({ where: { employeeId: parsed.data.employeeId }, data: staffData(parsed.data) });
-  return Response.json(staff);
+  try {
+    const staff = await prisma.staff.update({ where: { employeeId: parsed.data.employeeId }, data: staffData(parsed.data) });
+    return Response.json(staff);
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }
 
 export async function DELETE(request: Request) {
   const body = await request.json() as { employeeId?: string };
   if (!body.employeeId) return Response.json({ error: "employeeId is required" }, { status: 400 });
-  const staff = await prisma.staff.update({
-    where: { employeeId: body.employeeId },
-    data: { isActive: false, status: "TERMINATED", endDate: new Date() },
-  });
-  return Response.json(staff);
+  try {
+    const staff = await prisma.staff.update({
+      where: { employeeId: body.employeeId },
+      data: { isActive: false, status: "TERMINATED", endDate: new Date() },
+    });
+    return Response.json(staff);
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }

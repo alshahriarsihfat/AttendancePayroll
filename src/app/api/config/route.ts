@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_CONFIG } from "@/lib/config";
 import { prisma } from "@/server/db";
+import { dbErrorResponse } from "@/lib/api-error";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,11 @@ async function ensureConfig() {
 }
 
 export async function GET() {
-  return Response.json({ config: await ensureConfig() });
+  try {
+    return Response.json({ config: await ensureConfig() });
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }
 
 const ConfigUpdate = z.object({ key: z.string().min(1), value: z.string() });
@@ -28,16 +33,20 @@ const ConfigUpdate = z.object({ key: z.string().min(1), value: z.string() });
 export async function PUT(request: Request) {
   const parsed = ConfigUpdate.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid config payload" }, { status: 400 });
-  const fallback = DEFAULT_CONFIG.find((entry) => entry.key === parsed.data.key);
-  const config = await prisma.config.upsert({
-    where: { key: parsed.data.key },
-    create: {
-      key: parsed.data.key,
-      value: parsed.data.value,
-      description: fallback?.description ?? "",
-      category: fallback?.category ?? "General",
-    },
-    update: { value: parsed.data.value },
-  });
-  return Response.json({ config });
+  try {
+    const fallback = DEFAULT_CONFIG.find((entry) => entry.key === parsed.data.key);
+    const config = await prisma.config.upsert({
+      where: { key: parsed.data.key },
+      create: {
+        key: parsed.data.key,
+        value: parsed.data.value,
+        description: fallback?.description ?? "",
+        category: fallback?.category ?? "General",
+      },
+      update: { value: parsed.data.value },
+    });
+    return Response.json({ config });
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }

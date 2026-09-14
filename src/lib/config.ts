@@ -35,12 +35,11 @@ export const DEFAULT_CONFIG: ConfigEntry[] = [
   { key: "BREAK_REMINDER_MINUTES", value: "5", description: "Warning shown this many minutes before the paid break pool runs out.", category: "Attendance" },
   { key: "CLOCKIN_WINDOW_MINUTES", value: "30", description: "Clock-In button appears this many minutes before shift start.", category: "Attendance" },
   { key: "OVERTIME_MULTIPLIER", value: "1.25", description: "Overtime hourly rate = basic rate × this factor.", category: "Payroll" },
-  { key: "ADMIN_PIN", value: "9999", description: "Admin login PIN.", category: "Security" },
   { key: "ANNUAL_LEAVE_ENTITLEMENT", value: "20", description: "Annual leave days accrued per year.", category: "Leave" },
   { key: "SICK_LEAVE_ENTITLEMENT", value: "14", description: "Sick leave days per year.", category: "Leave" },
   { key: "CASUAL_LEAVE_ENTITLEMENT", value: "10", description: "Casual leave days per year.", category: "Leave" },
   { key: "SHEETS_API_URL", value: "", description: "Google Apps Script Web App /exec URL for cloud sync.", category: "Integration" },
-  { key: "SHEETS_API_KEY", value: "khan-pharmacy-2026", description: "Shared secret sent with sync requests.", category: "Integration" },
+  { key: "SHEETS_API_KEY", value: "", description: "Shared secret sent with sync requests.", category: "Integration" },
 ];
 
 export function configValue(config: ConfigEntry[], key: string, fallback = ""): string {
@@ -58,9 +57,6 @@ export const TAX_SLABS: TaxSlab[] = [
   { from: 750000, to: 1150000, rate: 0.15 },
   { from: 1150000, to: null, rate: 0.2 },
 ];
-
-/** Master admin credentials (manual fallback). */
-export const ADMIN = { USERNAME: "admin", PASSWORD: "9999" };
 
 /** Exactly 2 staff may be flagged as Supervisor/Cashier hybrid role. */
 export const SUPERVISOR_MAX = 2;

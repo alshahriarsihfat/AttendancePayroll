@@ -1,3 +1,5 @@
+
+"use client";
 import { AppProvider, useApp } from "./context/AppContext";
 import { PinLogin } from "./components/PinLogin";
 import { Layout } from "./components/Layout";
@@ -32,7 +34,8 @@ function Router() {
 }
 
 function Shell() {
-  const { session, role, view, mustClockInFirst } = useApp();
+  const { session, hydrated, role, view, mustClockInFirst } = useApp();
+  if (!hydrated) return <div className="min-h-screen bg-slate-50" aria-busy="true" />;
   if (!session) return <PinLogin />;
   // Staff, and supervisors who haven't clocked in yet, get the full-screen clock terminal.
   if (role === "STAFF") return <ClockTerminal />;

@@ -7,7 +7,7 @@ import { uid } from "./utils";
 import { isoDate, workingDaysBetween } from "./dates";
 
 // ============================================================================
-// AttendancePayroll — SYNTHETIC demo data. Never real PII.
+// KPSMS — SYNTHETIC demo data. Never real PII.
 // Staff IDs use the KP98XX format; PIN = last 4 of the ID.
 // ============================================================================
 
@@ -55,7 +55,7 @@ function buildStaff(): Employee[] {
     recordId: uid("REC"),
     employeeId: s.id,
     username: s.id.toLowerCase(),          // admin-assigned (e.g. kp9820)
-    password: s.id.slice(-4),              // admin-assigned (e.g. 9820)
+    password: s.id.slice(-4),              // demo PIN (e.g. 9820); hashed server-side in prisma/seed.ts
     fullName: s.name,
     email: s.email ?? "",
     phone: s.phone,

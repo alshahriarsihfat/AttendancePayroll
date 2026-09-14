@@ -1,3 +1,5 @@
+"use client";
+
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type ReactNode,
@@ -7,11 +9,11 @@ import type {
   LeaveType, Payment, Role, Session, TimeSession,
 } from "../types";
 import { createSeedData } from "../lib/seed";
-import { can, resolveLogin, type Permission } from "../lib/auth";
-import { computeSession, empShift, hourlyRateFor, scheduledBoundary, sessionFor } from "../lib/timeclock";
+import { can, type Permission } from "../lib/auth";
+import { computeSession, empShift, hourlyRateFor, scheduledBoundary, sessionFor, dhakaTodayKey } from "../lib/timeclock";
 import { validateLeave, validateStaff, type FieldError } from "../lib/validation";
 import { uid } from "../lib/utils";
-import { formatDuration, isoDate, nowISO, todayKey, workingDaysBetween } from "../lib/dates";
+import { formatDuration, isoDate, nowISO, workingDaysBetween } from "../lib/dates";
 import { payRound } from "../lib/currency";
 import { configValue, SUPERVISOR_MAX } from "../lib/config";
 
@@ -31,12 +33,11 @@ export interface ClockInEvent { ok: boolean; lateMin: number; isLate: boolean; }
 interface AppContextValue {
   data: Dataset;
   session: Session | null;
+  hydrated: boolean;
   role: Role;
   view: View;
   toasts: Toast[];
   // auth / nav
-  staffIndex: () => Record<string, Employee>;
-  tryLogin: (staffId: string, pin: string) => ReturnType<typeof resolveLogin>;
   loginAdmin: () => void;
   loginEmployee: (staffId: string) => void;
   logout: () => void;
@@ -84,6 +85,7 @@ interface AppContextValue {
   // config + sync
   updateConfig: (key: string, value: string) => void;
   resetData: () => void;
+  refreshData: () => Promise<boolean>;
   exportData: () => void;
   importData: (jsonText: string) => boolean;
 }
@@ -145,18 +147,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(STATE_ENDPOINT)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unable to load application state")))
-      .then((payload: { data?: Dataset }) => {
+    fetch("/api/auth")
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error("Unable to load session")))
+      .then((payload: { session?: Session | null }) => {
         if (cancelled) return;
-        if (payload.data) setData(migrate(payload.data));
-        return fetch("/api/auth");
+        setSession(payload.session ?? null);
+        if (payload?.session?.role === "SUPERVISOR") setView({ page: "terminal" });
+        if (!payload.session) return null;
+        return fetch(STATE_ENDPOINT);
       })
       .then((response) => response?.ok ? response.json() : null)
-      .then((payload: { session?: Session | null } | null) => {
+      .then((payload: { data?: Dataset } | null) => {
         if (cancelled) return;
-        setSession(payload?.session ?? null);
-        if (payload?.session?.role === "SUPERVISOR") setView({ page: "terminal" });
+        if (payload?.data) setData(migrate(payload.data));
         setHydrated(true);
       })
       .catch(() => setHydrated(true));
@@ -164,7 +167,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !session) return;
     const timer = window.setTimeout(() => {
       void postJson(STATE_ENDPOINT, { data }, "PUT");
     }, 250);
@@ -192,19 +195,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- approval system ----
   const flagApproval = useCallback((staffId: string, sessionId: string, type: "late" | "early_exit" | "break_overrun", deltaMin: number) => {
+    const id = uid("APR");
+    const date = dhakaTodayKey();
     setData((d) => ({
       ...d,
       approvalRequests: [{
-        id: uid("APR"), staffId, sessionId, type, deltaMin, date: todayKey(), status: "pending",
+        id, staffId, sessionId, type, deltaMin, date, status: "pending",
       }, ...(d.approvalRequests ?? [])],
     }));
-  }, []);
+    void postJson("/api/approvals", { id, staffId, sessionId, type, deltaMin, date }).then((response) => {
+      if (!response.ok) toast("Approval request was not saved to the server.", "error");
+    });
+  }, [toast]);
 
   // ---- auth ----
   // Staff lookup keyed by lowercase username. Defensive against missing fields
   // so a single bad cached record can never crash the whole app.
-  const staffIndex = useCallback(() => Object.fromEntries(data.staff.map((s) => [(s.username ?? s.employeeId ?? "").toLowerCase(), s])), [data.staff]);
-  const tryLogin = useCallback((username: string, password: string) => resolveLogin(username, password, staffIndex()), [staffIndex]);
   const loginAdmin = useCallback(() => { setSession({ role: "ADMIN", name: "Admin", loginAt: nowISO() }); setView({ page: "dashboard" }); }, []);
   const loginEmployee = useCallback((staffId: string) => {
     const s = data.staff.find((e) => e.employeeId === staffId || e.username.toLowerCase() === staffId.toLowerCase());
@@ -228,17 +234,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---- selectors ----
   const staffById = useCallback((id: string) => data.staff.find((e) => e.employeeId === id), [data.staff]);
   const shiftById = useCallback((id: string) => data.shifts.find((s) => s.id === id), [data.shifts]);
-  const todaySession = useCallback((staffId: string) => sessionFor(data.sessions, staffId, todayKey()), [data.sessions]);
+  const todaySession = useCallback((staffId: string) => sessionFor(data.sessions, staffId, dhakaTodayKey()), [data.sessions]);
   const paymentFor = useCallback((id: string) => data.payments.find((p) => p.id === id), [data.payments]);
   const isOnLeaveToday = useCallback((staffId: string) => {
-    const t = todayKey();
+    const t = dhakaTodayKey();
     return data.leaveRequests.some((r) => r.staffId === staffId && r.status === "Approved" && r.fromDate <= t && r.toDate >= t);
   }, [data.leaveRequests]);
 
   // ---- live clock ----
   const updateSession = useCallback((staffId: string, fn: (s: TimeSession) => TimeSession) => {
     setData((d) => {
-      const existing = d.sessions.find((s) => s.staffId === staffId && s.date === todayKey());
+      const existing = d.sessions.find((s) => s.staffId === staffId && s.date === dhakaTodayKey());
       if (!existing) return d;
       return { ...d, sessions: d.sessions.map((s) => (s.id === existing.id ? fn(s) : s)) };
     });
@@ -247,7 +253,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clockIn = useCallback((staffId: string): ClockInEvent => {
     const emp = data.staff.find((e) => e.employeeId === staffId);
     if (todaySession(staffId)) { toast("Already clocked in today.", "info"); return { ok: false, lateMin: 0, isLate: false }; }
-    const s: TimeSession = { id: uid("SES"), staffId, date: todayKey(), timeIn: nowISO(), timeOut: null, breaks: [], extraTime: [], goOuts: [], completed: false };
+    const s: TimeSession = { id: uid("SES"), staffId, date: dhakaTodayKey(), timeIn: nowISO(), timeOut: null, breaks: [], extraTime: [], goOuts: [], completed: false };
     setData((d) => ({ ...d, sessions: [...d.sessions, s] }));
     void postJson("/api/clock", { employeeId: staffId, action: "in" }).then(async (response) => {
       if (!response.ok) {
@@ -283,13 +289,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (s.timeOut) { toast("Already clocked out.", "info"); return { ok: false, earlyDepartureMin: 0 }; }
     const emp = staffById(staffId);
     const outISO = nowISO();
-    // early-departure detection vs scheduled shift end
     let earlyDepartureMin = 0;
     if (emp) {
       const shift = empShift(emp);
       const schedEnd = scheduledBoundary(s.timeIn, shift.endMin);
       const outMs = new Date(outISO).getTime();
-      if (outMs < schedEnd) earlyDepartureMin = Math.round((schedEnd - outMs) / 60000);
+      if (outMs < schedEnd) {
+        const raw = Math.round((schedEnd - outMs) / 60000);
+        const shiftDurationMin = shift.endMin >= shift.startMin
+          ? shift.endMin - shift.startMin
+          : (24 * 60 - shift.startMin) + shift.endMin;
+        earlyDepartureMin = Math.max(0, Math.min(raw, shiftDurationMin));
+      }
     }
     updateSession(staffId, (x) => ({
       ...x, timeOut: outISO, completed: true,
@@ -400,7 +411,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const finalPayable = payRound(calc.netPay - outstandingAdvance);
     const payment: Payment = {
       id: uid("PAY"), staffId: staff.employeeId, sessionId: sess.id,
-      date: todayKey(), paidAt,
+      date: dhakaTodayKey(), paidAt,
       periodLabel: `${isoDate(today())} · Day`, dutyHours: payRound(shift.regularHours, 2),
       workedMin: Math.round(calc.grossMin), breakMin: Math.round(calc.breakMin),
       overBreakMin: Math.round(calc.overBreakMin), overtimeMin: Math.round(calc.overtimeMin),
@@ -423,7 +434,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       };
       if (calc.overtimeMin > 0) {
         next.overtimeLogs = [{
-          id: uid("OT"), staffId: staff.employeeId, date: todayKey(),
+          id: uid("OT"), staffId: staff.employeeId, date: dhakaTodayKey(),
           shiftEnd: isoDate(new Date(scheduledBoundary(sess.timeIn, shift.endMin))), clockOut: finalised.timeOut!,
           overtimeMin: Math.round(calc.overtimeMin), hourlyRate: payRound(rate), amount: calc.overtimePay,
         }, ...d.overtimeLogs];
@@ -464,7 +475,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const newPayments: Payment[] = dues.map((sess) => {
       const calc = computeSession(sess, staff, data.config, new Date(sess.timeOut!).getTime());
       return {
-        id: uid("PAY"), staffId, sessionId: sess.id, date: todayKey(), paidAt,
+        id: uid("PAY"), staffId, sessionId: sess.id, date: dhakaTodayKey(), paidAt,
         periodLabel: `${sess.date} · Day`, dutyHours: 0,
         workedMin: Math.round(calc.grossMin), breakMin: Math.round(calc.breakMin),
         overBreakMin: Math.round(calc.overBreakMin), overtimeMin: Math.round(calc.overtimeMin),
@@ -492,7 +503,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!Number.isFinite(amt) || amt <= 0) { toast("Enter a valid amount.", "error"); return; }
     const paidAt = nowISO();
     const payment: Payment = {
-      id: uid("ADV"), staffId, sessionId: "", date: todayKey(), paidAt,
+      id: uid("ADV"), staffId, sessionId: "", date: dhakaTodayKey(), paidAt,
       periodLabel: `${isoDate(today())} · Advance`, dutyHours: 0, workedMin: 0, breakMin: 0,
       overBreakMin: 0, overtimeMin: 0, overtimePay: 0, hourlyRate: 0, grossPay: amt,
       overBreakDeduction: 0, netPay: amt, status: "Paid", paidBy: session?.name ?? "Admin",
@@ -638,11 +649,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       leaveBalances: status === "Approved" && req.leaveType !== "Unpaid"
         ? st.leaveBalances.map((b) => (b.staffId === req.staffId && b.leaveType === req.leaveType ? { ...b, usedDays: b.usedDays + req.days } : b))
         : st.leaveBalances,
-      staff: status === "Approved" && req.fromDate <= todayKey() && req.toDate >= todayKey()
+      staff: status === "Approved" && req.fromDate <= dhakaTodayKey() && req.toDate >= dhakaTodayKey()
         ? st.staff.map((e) => (e.employeeId === req.staffId ? { ...e, status: "On-leave" } : e))
         : status === "Rejected" && st.staff.find((e) => e.employeeId === req.staffId)?.status === "On-leave"
-        ? st.staff.map((e) => (e.employeeId === req.staffId ? { ...e, status: "Active" } : e))
-        : st.staff,
+          ? st.staff.map((e) => (e.employeeId === req.staffId ? { ...e, status: "Active" } : e))
+          : st.staff,
     }));
     audit(status === "Approved" ? "LEAVE_APPROVE" : "LEAVE_REJECT", "Leave", id, `${status} ${req.leaveType} leave for ${req.staffId}.`);
     toast(`Leave ${status.toLowerCase()}.`, status === "Approved" ? "success" : "info");
@@ -684,6 +695,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const resetData = useCallback(() => { setData(createSeedData()); toast("Demo data reset.", "info"); }, [toast]);
 
+  /** Re-fetch the latest state from server (used after clock actions to sync UI). */
+  const refreshData = useCallback(async () => {
+    try {
+      const response = await fetch(STATE_ENDPOINT, { cache: "no-store" });
+      if (!response.ok) throw new Error("Unable to refresh application state");
+      const payload = await response.json() as { data?: Dataset };
+      if (!payload.data) throw new Error("Application state is missing");
+      setData(migrate(payload.data));
+      return true;
+    } catch {
+      toast("Refresh failed - using current data.", "error");
+      return false;
+    }
+  }, [toast]);
+
   // ---- manual data editing (export / import JSON) ----
   const exportData = useCallback(() => {
     try {
@@ -691,7 +717,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `AttendancePayroll-data-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `KPSMS-data-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -707,7 +733,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast("Data imported successfully.", "success");
       return true;
     } catch {
-      toast("Invalid file — must be a valid AttendancePayroll data JSON.", "error");
+      toast("Invalid file — must be a valid KPSMS data JSON.", "error");
       return false;
     }
   }, [toast]);
@@ -717,6 +743,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!guard("manage.leave")) return;
     setData((st) => ({ ...st, approvalRequests: st.approvalRequests.map((a) => (a.id === id ? { ...a, status, managerNote: note, resolvedBy: session?.name ?? "Manager", resolvedAt: nowISO() } : a)) }));
     toast(`Request ${status}.`, status === "approved" ? "success" : "info");
+    void postJson("/api/approvals", { id, status, resolvedBy: session?.name ?? "Admin", managerNote: note }, "PATCH").then((response) => {
+      if (!response.ok) toast("Approval decision was not saved to the server.", "error");
+    });
   }, [guard, session, toast]);
 
   // ---- auto clock-out: N minutes after scheduled shift end ----
@@ -775,13 +804,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingApprovals = data.approvalRequests.filter((a) => a.status === "pending");
 
   const value: AppContextValue = {
-    data, session, role, view, toasts,
-    staffIndex, tryLogin, loginAdmin, loginEmployee, logout, navigate, toast, dismissToast,
+    data, session, hydrated, role, view, toasts,
+    loginAdmin, loginEmployee, logout, navigate, toast, dismissToast,
     canPerm, staffById, shiftById, todaySession, paymentFor, isOnLeaveToday,
     clockIn, clockOut, startBreak, endBreak, toggleExtraTime, startGoOut, endGoOut, paySession, markArrears, clearAllDues, payCustomAdvance, takeAdvance, unpaidShifts,
     anyOnDuty, mustClockInFirst, pendingApprovals, resolveApproval,
     createStaff, updateStaff, deactivateStaff, assignCounter,
-    submitLeave, decideLeave, updateConfig, resetData, exportData, importData,
+    submitLeave, decideLeave, updateConfig, resetData, refreshData, exportData, importData,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

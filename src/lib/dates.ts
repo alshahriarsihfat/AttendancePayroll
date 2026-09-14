@@ -5,11 +5,34 @@
 
 export const WEEKEND_DEFAULT = [5, 6]; // Fri(5), Sat(6)
 
+/** IANA zone for the pharmacy floor. Bangladesh has a fixed UTC+6 offset — no DST. */
+export const APP_TIMEZONE = "Asia/Dhaka";
+
 export function isoDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** Calendar date key (YYYY-MM-DD) of a datetime resolved in a specific IANA
+ *  timezone. This is the correct way to bucket sessions/payments/leave by
+ *  business day — `toISOString().slice(0,10)` returns the UTC date, which can
+ *  differ from the Dhaka calendar date between 18:00 and 24:00 UTC. */
+export function dateKeyInZone(d: Date, zone: string = APP_TIMEZONE): string {
+  // en-CA formats as YYYY-MM-DD natively; resolve via Intl so we never rely
+  // on the runtime process's own timezone.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+/** Today's Dhaka calendar date key (YYYY-MM-DD). */
+export function dhakaDateKey(d: Date = new Date()): string {
+  return dateKeyInZone(d, APP_TIMEZONE);
 }
 
 export function parseISO(s: string): Date {
@@ -97,14 +120,21 @@ export function formatDateLong(s?: string | null): string {
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-/** Format an ISO datetime for the audit log: "12 Mar, 14:32". */
+/** Format an ISO datetime for the audit log: "12 Mar, 14:32" (Dhaka local time). */
 export function formatDateTime(s?: string | null): string {
   if (!s) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return "—";
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}, ${hh}:${mm}`;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TIMEZONE,
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const value = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${value.day} ${value.month}, ${value.hour}:${value.minute}`;
 }
 
 /** Relative time: "2h ago". */
@@ -183,16 +213,23 @@ export function tenureMonths(joinISO: string, ref = new Date()): number {
 
 // ----- 12-hour formatting for the pharmacy clock system -------------------
 
-/** Format an ISO datetime as 12-hour time: "08:30 AM". */
+/** Format an ISO datetime as 12-hour time in Dhaka local time: "08:30 AM".
+ *  Always renders Dhaka time, regardless of the viewing device's own
+ *  timezone — the shift clock must never depend on where the browser
+ *  (or a Vercel server) happens to be. */
 export function formatTime12(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  let h = d.getHours();
-  const m = String(d.getMinutes()).padStart(2, "0");
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TIMEZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(d);
+  const value = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  // Normalize the narrow no-break space some ICU builds insert before AM/PM.
+  return `${value.hour}:${value.minute} ${value.dayPeriod}`.replace(/\u202f/g, " ");
 }
 
 /** Minutes between two ISO datetimes. */
@@ -253,20 +290,32 @@ export function formatCountdown(seconds: number): string {
   return `${neg ? "+" : ""}${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
-/** Today's date key in local time. */
+/** Today's date key in the DEVICE's local time (not Dhaka).
+ *  ⚠️ Do not use this for attendance/session bucketing or anything that
+ *  must agree with the shift-clock's business day — use `dhakaTodayKey()`
+ *  from `timeclock.ts` for that. This exists only for UI defaults (e.g.
+ *  pre-filling a date picker) where the viewer's own "today" is fine. */
 export function todayKey(): string {
   return isoDate(new Date());
 }
 
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const DAYS_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-/** Verbose localized date: "01 Jan 2026 Monday" (DD mmm YYYY dddd). */
+/** Verbose localized date in Dhaka time: "01 Jan 2026 Monday" (DD mmm YYYY dddd).
+ *  Always resolved against Asia/Dhaka so the header date badge can never
+ *  fall on a different calendar day than the shift/session logic
+ *  (which is Dhaka-based) purely because a device's clock is set to a
+ *  different timezone. */
 export function formatLongDate(d: Date | string | number = new Date()): string {
   const dt = typeof d === "number" ? new Date(d) : typeof d === "string" ? new Date(d) : d;
   if (Number.isNaN(dt.getTime())) return "—";
-  const dd = String(dt.getDate()).padStart(2, "0");
-  return `${dd} ${MONTHS_SHORT[dt.getMonth()]} ${dt.getFullYear()} ${DAYS_FULL[dt.getDay()]}`;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TIMEZONE,
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    weekday: "long",
+  }).formatToParts(dt);
+  const value = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${value.day} ${value.month} ${value.year} ${value.weekday}`;
 }
 
 /** Format a millisecond countdown as "Xh Ym Zs" (until next shift). */
@@ -278,5 +327,3 @@ export function formatCountdownHMS(ms: number): string {
   const s = totalSec % 60;
   return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
 }
-
-

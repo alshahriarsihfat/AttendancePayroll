@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/server/db";
+import { dbErrorResponse } from "@/lib/api-error";
 
 export const runtime = "nodejs";
 
@@ -16,18 +17,22 @@ const CreateLeave = z.object({
 export async function POST(request: Request) {
   const parsed = CreateLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave payload" }, { status: 400 });
-  const requestRow = await prisma.leaveRequest.create({
-    data: {
-      id: parsed.data.recordId,
-      staffId: parsed.data.staffId,
-      leaveType: parsed.data.leaveType,
-      fromDate: new Date(`${parsed.data.fromDate}T00:00:00`),
-      toDate: new Date(`${parsed.data.toDate}T00:00:00`),
-      days: parsed.data.days,
-      reason: parsed.data.reason || null,
-    },
-  });
-  return Response.json(requestRow, { status: 201 });
+  try {
+    const requestRow = await prisma.leaveRequest.create({
+      data: {
+        id: parsed.data.recordId,
+        staffId: parsed.data.staffId,
+        leaveType: parsed.data.leaveType,
+        fromDate: new Date(`${parsed.data.fromDate}T00:00:00`),
+        toDate: new Date(`${parsed.data.toDate}T00:00:00`),
+        days: parsed.data.days,
+        reason: parsed.data.reason || null,
+      },
+    });
+    return Response.json(requestRow, { status: 201 });
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }
 
 const DecideLeave = z.object({
@@ -40,14 +45,57 @@ const DecideLeave = z.object({
 export async function PATCH(request: Request) {
   const parsed = DecideLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave decision" }, { status: 400 });
-  const updated = await prisma.leaveRequest.update({
-    where: { id: parsed.data.recordId },
-    data: {
-      status: parsed.data.status,
-      approvedBy: parsed.data.approvedBy,
-      approvedAt: new Date(),
-      comment: parsed.data.comment?.trim() || null,
-    },
-  });
-  return Response.json(updated);
+  try {
+    const updated = await prisma.leaveRequest.update({
+      where: { id: parsed.data.recordId },
+      data: {
+        status: parsed.data.status,
+        approvedBy: parsed.data.approvedBy,
+        approvedAt: new Date(),
+        comment: parsed.data.comment?.trim() || null,
+      },
+    });
+
+    // -----------------------------------------------------------------------
+    // M5 FIX: Leave balance decrement (DB-persisted)
+    // -----------------------------------------------------------------------
+    // When a leave request is Approved, the used days for that staff member's
+    // leave balance must be incremented in the DATABASE — not just in the
+    // frontend's ephemeral state (which was lost on refresh).
+    if (parsed.data.status === "Approved" && updated.days > 0) {
+      const year = updated.fromDate.getFullYear();
+      const balance = await prisma.leaveBalance.findUnique({
+        where: {
+          staffId_leaveType_year: {
+            staffId: updated.staffId,
+            leaveType: updated.leaveType,
+            year,
+          },
+        },
+      });
+
+      if (balance) {
+        // Increment used days by the approved leave duration
+        await prisma.leaveBalance.update({
+          where: { id: balance.id },
+          data: { usedDays: balance.usedDays + updated.days },
+        });
+      } else {
+        // No balance row exists yet — create one so the decrement is recorded
+        await prisma.leaveBalance.create({
+          data: {
+            staffId: updated.staffId,
+            leaveType: updated.leaveType,
+            entitledDays: 0,
+            usedDays: updated.days,
+            year,
+          },
+        });
+      }
+    }
+
+    return Response.json(updated);
+  } catch (error) {
+    return dbErrorResponse(error);
+  }
 }

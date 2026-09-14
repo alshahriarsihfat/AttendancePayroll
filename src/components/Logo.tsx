@@ -17,7 +17,7 @@ export function Logo({ className, size = 48 }: { className?: string; size?: numb
   return (
     <img
       src={src}
-      alt="AttendancePayroll"
+      alt="KPSMS"
       width={size}
       height={size}
       onError={() => { if (src !== FALLBACK_LOGO) setSrc(FALLBACK_LOGO); }}

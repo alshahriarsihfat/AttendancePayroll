@@ -1,5 +1,4 @@
 import type { EmpRole, Employee, Role } from "../types";
-import { ADMIN } from "./config";
 
 // ============================================================================
 // Auth — 3-tier RBAC for Khan Pharmacy.
@@ -59,23 +58,12 @@ export type LoginResult =
   | { type: "invalid"; reason: string };
 
 /**
- * Resolve a username + password login (all credentials admin-assigned).
- *   admin / 9999   → master admin.
- *   otherwise      → username must exist & its stored password must match.
- *   `staffByUsername` maps lowercase username → Employee.
+ * Legacy client-side login helper.
+ *
+ * DEPRECATED — authentication now happens server-side through POST /api/auth
+ * (which verifies scrypt-hashed passwords). Client-side comparisons are no
+ * longer possible because passwords are stored only as salted hashes.
  */
-export function resolveLogin(
-  username: string,
-  password: string,
-  staffByUsername: Record<string, Employee>
-): LoginResult {
-  const u = username.trim();
-  // Master admin (manual fallback).
-  if (u.toLowerCase() === ADMIN.USERNAME && password === ADMIN.PASSWORD) return { type: "admin" };
-  if (!u) return { type: "invalid", reason: "Enter your username." };
-  if (!password) return { type: "invalid", reason: "Enter your password." };
-  const emp = staffByUsername[u.toLowerCase()];
-  if (!emp) return { type: "invalid", reason: "Username not found." };
-  if (emp.password !== password) return { type: "invalid", reason: "Incorrect password." };
-  return { type: "employee", staffId: emp.employeeId, empRole: emp.role };
+export function resolveLogin(): LoginResult {
+  return { type: "invalid", reason: "Sign in through the server login form." };
 }

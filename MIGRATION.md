@@ -46,9 +46,9 @@ DIRECT_URL="postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?ss
 ## Step 3 — Install dependencies
 
 ```bash
-npm install prisma --save-dev
-npm install @prisma/client @neondatabase/serverless @prisma/adapter-neon zod
-npx prisma init
+pnpm dlx create-next-app@latest AttendancePayroll --typescript --tailwind --app --eslint --src-dir
+pnpm add -D prisma
+pnpm add @prisma/client @neondatabase/serverless @prisma/adapter-neon zod
 ```
 
 ## Step 4 — Copy the backend files

@@ -41,6 +41,36 @@ export function isWithinOperatingWindow(date: Date = new Date(), config: ConfigE
     : minutes >= open || minutes <= close;
 }
 
+/** Get current time in Asia/Dhaka as minutes from midnight (0-1440). */
+export function getDhakaMinutes(date: Date = new Date()): number {
+  const dhakaStr = date.toLocaleTimeString("en-US", { timeZone: "Asia/Dhaka", hour12: false });
+  const [h, m] = dhakaStr.split(":").map(Number);
+  return h * 60 + m;
+}
+
+/** Check if current time is within an individual's shift window (with early check-in grace). */
+export function isWithinIndividualShiftWindow(
+  date: Date = new Date(),
+  shift: EmpShift,
+  config: ConfigEntry[] = []
+): boolean {
+  const minutes = getDhakaMinutes(date);
+  const earlyCheckinMin = configNumber(config, "EARLY_CHECKIN_MINUTES", 5);
+  const shiftStartWithGrace = shift.startMin - earlyCheckinMin;
+  
+  // Overnight shift: endMin < startMin (e.g., 22:00 to 06:00 means 1320 to 360)
+  // Window active when: currentMinutes >= startWithGrace OR currentMinutes <= endMin
+  // Same-day shift: startMin < endMin
+  // Window active when: currentMinutes >= startWithGrace AND currentMinutes <= endMin
+  if (shiftStartWithGrace <= shift.endMin) {
+    // Same-day shift
+    return minutes >= shiftStartWithGrace && minutes <= shift.endMin;
+  } else {
+    // Overnight shift (spans midnight)
+    return minutes >= shiftStartWithGrace || minutes <= shift.endMin;
+  }
+}
+
 /** An employee's resolved shift params. */
 export interface EmpShift {
   startMin: number;       // minutes from midnight
@@ -79,10 +109,13 @@ export function hourlyRateFor(staff: Pick<Employee, "salaryType" | "hourlyRate" 
 /** Datetime (ms) of the scheduled shift start/end on a given clock-in day. */
 export function scheduledBoundary(timeInISO: string, boundaryMin: number): number {
   const d = new Date(timeInISO);
-  const dhakaDateStr = d.toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
-  const localDay = new Date(dhakaDateStr);
-  
-  const timeInMinutes = d.getHours() * 60 + d.getMinutes();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const value = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const localDay = new Date(`${value.year}-${value.month}-${value.day}T00:00:00+06:00`);
+  const timeInMinutes = Number(value.hour) * 60 + Number(value.minute);
   const dayOffset = (boundaryMin < timeInMinutes && Math.abs(boundaryMin - timeInMinutes) > 12 * 60) ? 24 * 60 : 0;
   return localDay.getTime() + (boundaryMin + dayOffset) * 60000;
 }
@@ -273,25 +306,32 @@ export function computeSession(
   };
 }
 
-/** Next scheduled shift start (ms) — today if not yet started, else tomorrow. */
+/** Next scheduled shift start (ms) — today if not yet started, else tomorrow.
+ *  Derives "today" as a Dhaka calendar date (fixed UTC+6, no DST) rather than
+ *  the runtime's own local midnight, so this returns the same instant
+ *  whether it runs in a Dhaka-timezone browser or on a UTC Vercel server. */
 export function nextShiftAt(startMin: number, fromMs: number = Date.now()): number {
-  const day = new Date(fromMs);
-  day.setHours(0, 0, 0, 0);
-  const todayStart = day.getTime() + startMin * 60000;
+  const dhakaDateStr = new Date(fromMs).toLocaleDateString("en-CA", { timeZone: "Asia/Dhaka" }); // "YYYY-MM-DD"
+  const dhakaMidnightMs = new Date(`${dhakaDateStr}T00:00:00+06:00`).getTime();
+  const todayStart = dhakaMidnightMs + startMin * 60000;
   return todayStart > fromMs ? todayStart : todayStart + 24 * 3600_000;
 }
 
 /** Safe timezone-aware lookup matching Dhaka local business dates */
+export function dhakaTodayKey(): string {
+  // en-CA formats as YYYY-MM-DD directly — no need to re-parse through the
+  // local Date constructor (which technically only reliably parses
+  // "M/D/YYYY" in V8, not per spec across all JS engines).
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Dhaka" });
+}
+
 export function sessionFor(sessions: TimeSession[], staffId: string, dateISO?: string): TimeSession | undefined {
+  const todayDhaka = dhakaTodayKey();
   if (dateISO) {
-    return sessions.find((s) => s.staffId === staffId && s.date === dateISO);
+    const session = sessions.find((s) => s.staffId === staffId && s.date === dateISO);
+    if (session && session.date === todayDhaka) {
+      return session;
+    }
   }
-  const dhakaStr = new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
-  const d = new Date(dhakaStr);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const targetDate = `${yyyy}-${mm}-${dd}`;
-  
-  return sessions.find((s) => s.staffId === staffId && (s.date === targetDate || !s.completed));
+  return sessions.find((s) => s.staffId === staffId && s.date === todayDhaka);
 }

@@ -4,12 +4,11 @@
 // ============================================================================
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider  = "postgresql"
+  provider = "postgresql"
 }
 
 // ---------------------------------------------------------------------------
@@ -50,19 +49,19 @@ enum AdvanceType {
 // ---------------------------------------------------------------------------
 model Staff {
   id           String      @id @default(cuid())
-  employeeId   String      @unique            // KP9820
+  employeeId   String      @unique // KP9820
   username     String      @unique
-  password     String                         // bcrypt hash in production
+  password     String // bcrypt hash in production
   fullName     String
   email        String?
   phone        String?
   department   String
   jobTitle     String
   section      String      @default("Sales Floor")
-  counter      Int?                           // 1–9 (Pharmacy Counter)
+  counter      Int? // 1–9 (Pharmacy Counter)
   role         Role        @default(STAFF)
   salaryType   SalaryType  @default(DAILY)
-  baseSalary   Float       @default(0)        // monthly BDT
+  baseSalary   Float       @default(0) // monthly BDT
   dailyRate    Float       @default(0)
   hourlyRate   Float       @default(0)
   shiftStart   String      @default("09:00 AM")
@@ -72,8 +71,8 @@ model Staff {
   photoUrl     String?
   status       StaffStatus @default(ACTIVE)
   isActive     Boolean     @default(true)
-  arrears      Float       @default(0)        // owed TO staff
-  advance      Float       @default(0)        // owed BY staff (অগ্রিম)
+  arrears      Float       @default(0) // owed TO staff
+  advance      Float       @default(0) // owed BY staff (অগ্রিম)
   joinDate     DateTime
   endDate      DateTime?
   createdAt    DateTime    @default(now())
@@ -94,18 +93,18 @@ model Staff {
 // Shift logs (Clock In/Out, Breaks, Field work)
 // ---------------------------------------------------------------------------
 model TimeSession {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   staffId        String
-  staff          Staff    @relation(fields: [staffId], references: [employeeId])
-  date           DateTime                        // shift date (local midnight)
+  staff          Staff     @relation(fields: [staffId], references: [employeeId])
+  date           DateTime // shift date (local midnight)
   timeIn         DateTime
   timeOut        DateTime?
-  completed      Boolean  @default(false)
-  autoClockedOut Boolean  @default(false)         // system closed it
+  completed      Boolean   @default(false)
+  autoClockedOut Boolean   @default(false) // system closed it
 
-  breaks    Json    @default("[]")
-  goOuts    Json    @default("[]")
-  extraTime Json    @default("[]")
+  breaks    Json @default("[]")
+  goOuts    Json @default("[]")
+  extraTime Json @default("[]")
 
   payments  Payment[]
   approvals ApprovalRequest[]
@@ -125,10 +124,10 @@ model Payment {
   id                 String        @id @default(cuid())
   staffId            String
   staff              Staff         @relation(fields: [staffId], references: [employeeId])
-  sessionId          String?
+  sessionId          String?       @unique
   session            TimeSession?  @relation(fields: [sessionId], references: [id])
-  date               DateTime                      // shift date
-  paidAt             DateTime                      // EXACT cash-flow timestamp
+  date               DateTime // shift date
+  paidAt             DateTime // EXACT cash-flow timestamp
   periodLabel        String
   dutyHours          Float         @default(0)
   workedMin          Float         @default(0)
@@ -139,10 +138,10 @@ model Payment {
   grossPay           Float         @default(0)
   overtimePay        Float         @default(0)
   overBreakDeduction Float         @default(0)
-  advanceAdjusted    Float         @default(0)      // advance deducted this payout
-  netPay             Float         @default(0)      // final cash handed over
+  advanceAdjusted    Float         @default(0) // advance deducted this payout
+  netPay             Float         @default(0) // final cash handed over
   status             PaymentStatus @default(PAID)
-  paidBy             String                          // supervisor/admin name
+  paidBy             String // supervisor/admin name
   createdAt          DateTime      @default(now())
 
   @@index([staffId, paidAt])
@@ -158,11 +157,11 @@ model AdvanceLog {
   staffId      String
   staff        Staff       @relation(fields: [staffId], references: [employeeId])
   type         AdvanceType
-  amount       Float                          // always positive
-  balanceAfter Float                         // running balance snapshot
-  paymentId    String?                        // links to the payout that adjusted it
+  amount       Float // always positive
+  balanceAfter Float // running balance snapshot
+  paymentId    String? // links to the payout that adjusted it
   note         String?
-  createdBy    String                          // supervisor/admin
+  createdBy    String // supervisor/admin
   createdAt    DateTime    @default(now())
 
   @@index([staffId, createdAt])
@@ -191,7 +190,7 @@ model LeaveRequest {
   id         String    @id @default(cuid())
   staffId    String
   staff      Staff     @relation(fields: [staffId], references: [employeeId])
-  leaveType  String                     // Annual | Sick | Casual | ...
+  leaveType  String // Annual | Sick | Casual | ...
   fromDate   DateTime
   toDate     DateTime
   days       Float
@@ -199,7 +198,7 @@ model LeaveRequest {
   status     String    @default("Pending")
   approvedBy String?
   approvedAt DateTime?
-  comment    String?                    // reviewer note (visible to staff)
+  comment    String? // reviewer note (visible to staff)
   createdAt  DateTime  @default(now())
 
   @@index([staffId, status])
@@ -227,7 +226,7 @@ model ApprovalRequest {
   staff       Staff       @relation(fields: [staffId], references: [employeeId])
   sessionId   String
   session     TimeSession @relation(fields: [sessionId], references: [id])
-  type        String      // late | early_exit | break_overrun
+  type        String // late | early_exit | break_overrun
   deltaMin    Float
   date        DateTime
   status      String      @default("pending")
@@ -245,13 +244,13 @@ model ApprovalRequest {
 model AuditLog {
   id         String   @id @default(cuid())
   timestamp  DateTime @default(now())
-  action     String   // CLOCK_IN | PAYMENT | ADVANCE | ...
+  action     String // CLOCK_IN | PAYMENT | ADVANCE | ...
   entityType String
   entityId   String
   actorName  String
   actorRole  String
   summary    String
-  managedBy  String?  // supervisor acting on behalf of staff
+  managedBy  String? // supervisor acting on behalf of staff
 
   @@index([timestamp])
   @@index([action])

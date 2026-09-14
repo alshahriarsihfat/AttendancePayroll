@@ -1,4 +1,5 @@
 import { createSeedData } from "../src/lib/seed";
+import { hashPassword } from "../src/lib/password";
 import { prisma } from "../src/server/db";
 
 const roleMap = {
@@ -23,12 +24,13 @@ async function main() {
   const { staff } = createSeedData();
 
   for (const employee of staff) {
+    const hashedPassword = hashPassword(employee.password);
     await prisma.staff.upsert({
       where: { employeeId: employee.employeeId },
       create: {
         employeeId: employee.employeeId,
         username: employee.username,
-        password: employee.password,
+        password: hashedPassword,
         fullName: employee.fullName,
         email: employee.email || null,
         phone: employee.phone || null,
@@ -55,7 +57,7 @@ async function main() {
       },
       update: {
         username: employee.username,
-        password: employee.password,
+        password: hashedPassword,
         fullName: employee.fullName,
         email: employee.email || null,
         phone: employee.phone || null,

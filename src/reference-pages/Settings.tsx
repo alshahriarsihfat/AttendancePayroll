@@ -3,7 +3,6 @@ import { useApp } from "../context/AppContext";
 import { Card, SectionHeader, Input, Button } from "../components/ui";
 import { ConfirmDialog } from "../components/Modal";
 import { Icon } from "../components/icons";
-import { ADMIN } from "../lib/config";
 import type { ConfigEntry } from "../types";
 
 export function Settings() {
@@ -62,7 +61,6 @@ export function Settings() {
       <Card className="p-5">
         <SectionHeader title="Login Access" subtitle="How staff & supervisors sign in" icon="pin" />
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <PinCard label="Admin Login" value={`${ADMIN.USERNAME} / ${ADMIN.PASSWORD}`} tone="rose" />
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Staff &amp; Supervisor</p>
             <p className="mt-1 text-sm font-semibold text-emerald-800">Unique username + password</p>

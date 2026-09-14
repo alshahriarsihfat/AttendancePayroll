@@ -6,6 +6,7 @@ import { StaffFormModal } from "../components/StaffFormModal";
 import { ConfirmDialog } from "../components/Modal";
 import { StatusBadge } from "../components/StatusBadge";
 import { Icon } from "../components/icons";
+import { ClockTerminal } from "./ClockTerminal";
 import { formatBDT } from "../lib/currency";
 import { formatDate } from "../lib/dates";
 import type { Employee } from "../types";
@@ -18,6 +19,7 @@ export function Staff() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [selectedStaff, setSelectedStaff] = useState<Employee | null>(null);
 
   const rows = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -26,6 +28,18 @@ export function Staff() {
       .filter((s) => !t || s.fullName.toLowerCase().includes(t) || s.employeeId.toLowerCase().includes(t) || s.phone.includes(t))
       .sort((a, b) => a.employeeId.localeCompare(b.employeeId));
   }, [data.staff, q, dept]);
+
+  if (selectedStaff) {
+    return (
+      <div>
+        <div className="mb-4 flex items-center gap-3">
+          <Button variant="secondary" icon="arrowLeft" onClick={() => setSelectedStaff(null)}>Back to list</Button>
+          <p className="text-sm text-slate-500">Managing clock for <span className="font-semibold text-slate-900">{selectedStaff.fullName}</span></p>
+        </div>
+        <ClockTerminal targetStaffId={selectedStaff.employeeId} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5 animate-fade">
@@ -73,6 +87,7 @@ export function Staff() {
                     </div>
                     {canManage && (
                       <div className="flex w-full gap-2">
+                        <Button size="sm" variant="secondary" icon="clock" onClick={() => setSelectedStaff(s)} className="flex-1">Clock</Button>
                         <Button size="sm" variant="secondary" icon="pencil" onClick={() => { setEditing(s); setModalOpen(true); }} className="flex-1">Edit</Button>
                         {s.isActive && <Button size="sm" variant="secondary" icon="trash" className="flex-1 text-rose-600" onClick={() => setConfirmId(s.employeeId)}>Remove</Button>}
                       </div>
@@ -117,10 +132,11 @@ export function Staff() {
                         <td className="px-3 py-3"><StatusBadge status={s.status} /></td>
                         {canManage && (
                           <td className="px-5 py-3 text-right">
-                            <div className="flex justify-end gap-1">
-                              <IconButton icon="pencil" label="Edit" size="sm" onClick={() => { setEditing(s); setModalOpen(true); }} />
-                              {s.isActive && <IconButton icon="trash" label="Deactivate" size="sm" className="hover:text-rose-600" onClick={() => setConfirmId(s.employeeId)} />}
-                            </div>
+                        <div className="flex justify-end gap-1">
+                          <IconButton icon="clock" label="Clock" size="sm" onClick={() => setSelectedStaff(s)} />
+                          <IconButton icon="pencil" label="Edit" size="sm" onClick={() => { setEditing(s); setModalOpen(true); }} />
+                          {s.isActive && <IconButton icon="trash" label="Deactivate" size="sm" className="hover:text-rose-600" onClick={() => setConfirmId(s.employeeId)} />}
+                        </div>
                           </td>
                         )}
                       </tr>

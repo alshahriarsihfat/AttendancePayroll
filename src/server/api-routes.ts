@@ -9,38 +9,62 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma, payRound } from "./db";
+import { dbErrorResponse } from "@/lib/api-error";
+import { dateKeyInZone, minutesBetween } from "@/lib/dates";
+import { scheduledBoundary } from "@/lib/timeclock";
+import { sessionFromRequest, type AuthSession } from "@/lib/auth-session";
 
 // ---------------------------------------------------------------------------
 // POST /api/clock — Handles ALL clock actions atomically.
 // Body: { employeeId, action: "in"|"out"|"break_start"|"break_end"|"goout_start"|"goout_end", ... }
 // ---------------------------------------------------------------------------
 const ClockSchema = z.object({
-  employeeId: z.string().min(1),
+  employeeId: z.string().min(1).optional(),
+  staffId: z.string().min(1).optional(),
   action: z.enum(["in", "out", "break_start", "break_end", "goout_start", "goout_end"]),
   breakType: z.enum(["meal", "rest", "unpaid"]).optional(),
   goOutReason: z.string().optional(),
   goOutEstimatedMin: z.number().int().positive().optional(),
-  managedBy: z.string().optional(),   // supervisor acting on staff's behalf
+}).refine((value) => Boolean(value.employeeId || value.staffId), {
+  message: "Target staff id is required.",
+  path: ["employeeId"],
 });
 
 export async function POST_clock(req: Request) {
-  const body = ClockSchema.safeParse(await req.json());
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+
+  let payload: unknown;
+  try {
+    payload = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid payload" }, { status: 400 });
+  }
+
+  const body = ClockSchema.safeParse(payload);
   if (!body.success) {
     return Response.json({ error: "Invalid payload", details: body.error.flatten() }, { status: 400 });
   }
-  const { employeeId, action, managedBy } = body.data;
+  const employeeId = body.data.employeeId ?? body.data.staffId ?? "";
+  const { action } = body.data;
   const now = new Date();
   const todayKey = dhakaDateKey(now);
   const today = dhakaStart(todayKey);
   const config = await loadConfig();
-  if ((action === "in" || action === "out") && !isOperatingWindow(now, config)) {
-    return Response.json({ error: "Clock actions are available from 09:00 AM through 11:00 PM" }, { status: 422 });
-  }
-
   try {
     const staff = await prisma.staff.findUnique({ where: { employeeId } });
     if (!staff || !staff.isActive) {
       return Response.json({ error: "Staff not found or inactive" }, { status: 404 });
+    }
+
+    const managesOthers = (actor.role === "ADMIN" || actor.role === "SUPERVISOR") && actor.staffId !== employeeId;
+    if (actor.role === "STAFF" && actor.staffId !== employeeId) {
+      return Response.json({ error: "You can only manage your own clock." }, { status: 403 });
+    }
+    const managedBy = managesOthers ? actor.name : undefined;
+
+    if (action === "in" && !isWithinShiftWindow(now, staff.shiftStart, staff.shiftEnd, config)) {
+      return Response.json({ error: "Clock in is available only during the assigned shift window" }, { status: 422 });
     }
 
     const approvedLeave = await prisma.leaveRequest.findFirst({
@@ -61,7 +85,52 @@ export async function POST_clock(req: Request) {
         const existing = await tx.timeSession.findUnique({
           where: { staffId_date: { staffId: employeeId, date: today } },
         });
-        if (existing) return { error: "Already clocked in today" as const };
+        if (existing) {
+          if (!existing.timeOut && !existing.completed) {
+            return { error: "Already clocked in today" as const };
+          }
+
+          const paidForSession = await tx.payment.findFirst({ where: { sessionId: existing.id } });
+          if (paidForSession) {
+            return { error: "This shift is already paid and cannot be re-opened" as const };
+          }
+          if (!managesOthers) {
+            return { error: "This shift is complete and can only be re-opened by a supervisor" as const };
+          }
+
+          const [hh, mm] = parseShiftTime(staff.shiftStart);
+          const shiftStart = dhakaAt(todayKey, hh * 60 + mm);
+          const lateMin = now > shiftStart ? Math.round((now.getTime() - shiftStart.getTime()) / 60000) : 0;
+          const reopened = await tx.timeSession.update({
+            where: { id: existing.id },
+            data: {
+              timeIn: now,
+              timeOut: null,
+              completed: false,
+              autoClockedOut: false,
+              breaks: [],
+              goOuts: [],
+              extraTime: [],
+            },
+          });
+          await tx.auditLog.create({
+            data: {
+              action: "CLOCK_IN",
+              entityType: "TimeSession",
+              entityId: reopened.id,
+              actorName: actor.name,
+              actorRole: actor.role,
+              summary: `${staff.fullName} clocked in${lateMin > 0 ? ` (${lateMin}m late)` : " on time"}${existing.timeOut ? " (re-opened)" : ""}`,
+              managedBy,
+            },
+          });
+          if (lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10)) {
+            await tx.approvalRequest.create({
+              data: { staffId: employeeId, sessionId: reopened.id, type: "late", deltaMin: lateMin, date: today },
+            });
+          }
+          return { session: reopened, lateMin, reopened: true };
+        }
 
         // Close forgotten prior-day sessions at the scheduled shift end before
         // creating today's unique staff/date row.
@@ -84,7 +153,7 @@ export async function POST_clock(req: Request) {
         await tx.auditLog.create({
           data: {
             action: "CLOCK_IN", entityType: "TimeSession", entityId: session.id,
-            actorName: staff.fullName, actorRole: staff.role.toString(),
+            actorName: actor.name, actorRole: actor.role,
             summary: `${staff.fullName} clocked in${lateMin > 0 ? ` (${lateMin}m late)` : " on time"}`,
             managedBy,
           },
@@ -119,14 +188,14 @@ export async function POST_clock(req: Request) {
       }
       const type = body.data.breakType ?? "meal";
       breaks.push({ type, start: now.toISOString(), end: null });
-      await saveSession(session.id, { breaks }, managedBy, `started ${type} break`);
+      await saveSession(session.id, { breaks }, actor, managedBy, `started ${type} break`);
       return Response.json({ ok: true });
     }
 
     // ---- BREAK END ----
     if (action === "break_end") {
       const updated = breaks.map((b) => (b.end ? b : { ...b, end: now.toISOString() }));
-      await saveSession(session.id, { breaks: updated }, managedBy, "returned from break");
+      await saveSession(session.id, { breaks: updated }, actor, managedBy, "returned from break");
       return Response.json({ ok: true });
     }
 
@@ -143,14 +212,14 @@ export async function POST_clock(req: Request) {
         estimatedMin: body.data.goOutEstimatedMin ?? 15,
         start: now.toISOString(), end: null,
       });
-      await saveSession(session.id, { goOuts }, managedBy, `went out: ${body.data.goOutReason}`);
+      await saveSession(session.id, { goOuts }, actor, managedBy, `went out: ${body.data.goOutReason}`);
       return Response.json({ ok: true });
     }
 
     // ---- GO-OUT END ----
     if (action === "goout_end") {
       const updated = goOuts.map((g) => (g.end ? g : { ...g, end: now.toISOString() }));
-      await saveSession(session.id, { goOuts: updated }, managedBy, "returned from go-out");
+      await saveSession(session.id, { goOuts: updated }, actor, managedBy, "returned from go-out");
       return Response.json({ ok: true });
     }
 
@@ -159,7 +228,7 @@ export async function POST_clock(req: Request) {
       const outISO = now.toISOString();
       // Early-departure detection
       const [eh, em] = parseShiftTime(staff.shiftEnd);
-      const shiftEnd = dhakaAt(todayKey, eh * 60 + em);
+      const shiftEnd = new Date(scheduledBoundary(session.timeIn.toISOString(), eh * 60 + em));
       const earlyMin = now < shiftEnd ? Math.round((shiftEnd.getTime() - now.getTime()) / 60000) : 0;
 
       const closed = {
@@ -182,7 +251,7 @@ export async function POST_clock(req: Request) {
       await prisma.auditLog.create({
         data: {
           action: "CLOCK_OUT", entityType: "TimeSession", entityId: session.id,
-          actorName: staff.fullName, actorRole: staff.role.toString(),
+          actorName: actor.name, actorRole: actor.role,
           summary: `${staff.fullName} clocked out${earlyMin ? ` (${earlyMin}m early)` : ""}`,
           managedBy,
         },
@@ -193,8 +262,7 @@ export async function POST_clock(req: Request) {
 
     return Response.json({ error: "Unknown action" }, { status: 400 });
   } catch (err) {
-    console.error("[api/clock]", err);
-    return Response.json({ error: "Internal server error" }, { status: 500 });
+    return dbErrorResponse(err);
   }
 }
 
@@ -208,6 +276,10 @@ const PaySchema = z.object({
   paidBy: z.string().min(1),
 });
 
+/** Thrown when a payment for this session already exists (checked inside the
+ *  transaction so concurrent requests can't both create a duplicate). */
+class PaymentAlreadyPaidError extends Error {}
+
 export async function POST_payment(req: Request) {
   const body = PaySchema.safeParse(await req.json());
   if (!body.success) return Response.json({ error: "Invalid payload" }, { status: 400 });
@@ -218,9 +290,6 @@ export async function POST_payment(req: Request) {
       include: { staff: true },
     });
     if (!session?.timeOut) return Response.json({ error: "Staff must clock out first" }, { status: 409 });
-
-    const existing = await prisma.payment.findFirst({ where: { sessionId: session.id } });
-    if (existing) return Response.json({ error: "Already paid" }, { status: 409 });
 
     // ---- Wage calculation (mirrors frontend computeSession) ----
     const staff = session.staff;
@@ -246,16 +315,20 @@ export async function POST_payment(req: Request) {
     const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
 
     // Overtime: minutes past scheduled shift end
-    const [eh, em] = parseShiftTime(staff.shiftEnd);
-    const shiftEnd = dhakaAt(dhakaDateKey(session.timeIn), eh * 60 + em);
-    const overtimeMin = session.timeOut > shiftEnd
-      ? Math.round((session.timeOut.getTime() - shiftEnd.getTime()) / 60000) : 0;
+    const shiftEndMs = scheduledBoundary(session.timeIn.toISOString(), parseShiftTime(staff.shiftEnd)[0] * 60 + parseShiftTime(staff.shiftEnd)[1]);
+    const overtimeMin = session.timeOut.getTime() > shiftEndMs
+      ? Math.round((session.timeOut.getTime() - shiftEndMs) / 60000) : 0;
+    const extraTimeMin = ((session.extraTime ?? []) as Array<{ start: string; end: string | null }>).reduce((sum: number, et) => {
+      const endISO = et.end ?? session.timeOut!.toISOString();
+      return sum + minutesBetween(et.start, endISO);
+    }, 0);
 
     // ---- Money (single rounding point) ----
-    const basicMin = Math.max(0, workedMin - overtimeMin);
+    const totalOvertimeMin = overtimeMin + extraTimeMin;
+    const basicMin = Math.max(0, workedMin - totalOvertimeMin);
     const grossPay = payRound(hourlyRate * (basicMin / 60));
     const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
-    const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (overtimeMin / 60));
+    const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (totalOvertimeMin / 60));
     const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
 
     // ---- AUTO ADVANCE ADJUSTMENT ----
@@ -263,15 +336,25 @@ export async function POST_payment(req: Request) {
     const netPay = payRound(Math.max(0, netEarned - advanceAdjusted));
 
     // ---- ATOMIC TRANSACTION ----
+    // Duplicate-payment guard runs INSIDE the transaction. Paired with the
+    // `@unique` constraint on Payment.sessionId, this closes the race where two
+    // concurrent requests could both pass a check made outside the transaction
+    // and create two payments for the same shift.
     const payment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const alreadyPaid = await tx.payment.findFirst({ where: { sessionId: session.id } });
+      if (alreadyPaid) throw new PaymentAlreadyPaidError();
+
       const p = await tx.payment.create({
         data: {
           staffId: staff.employeeId, sessionId: session.id,
           date: session.date, paidAt: new Date(),          // exact cash-flow time
-          periodLabel: `${session.date.toISOString().slice(0, 10)} · Day`,
+          // Resolve the SHIFT's calendar date in Dhaka time — session.date is
+          // stored as Dhaka midnight, and toISOString().slice(0,10) returns the
+          // UTC date which lands on the previous day between 18:00–24:00 UTC.
+          periodLabel: `${dateKeyInZone(session.date)} · Day`,
           dutyHours: payRound(shiftHours), workedMin: Math.round(workedMin),
           breakMin: Math.round(mealMin + restMin), overBreakMin: Math.round(overBreakMin),
-          overtimeMin: Math.max(0, overtimeMin), hourlyRate: payRound(hourlyRate), grossPay: payRound(grossPay),
+          overtimeMin: Math.max(0, totalOvertimeMin), hourlyRate: payRound(hourlyRate), grossPay: payRound(grossPay),
           overtimePay: payRound(overtimePay), overBreakDeduction: payRound(overBreakDeduction),
           advanceAdjusted, netPay,
           status: "PAID", paidBy: body.data.paidBy,
@@ -307,8 +390,15 @@ export async function POST_payment(req: Request) {
 
     return Response.json(payment);
   } catch (err) {
-    console.error("[api/payments]", err);
-    return Response.json({ error: "Internal server error" }, { status: 500 });
+    if (err instanceof PaymentAlreadyPaidError) {
+      return Response.json({ error: "Already paid" }, { status: 409 });
+    }
+    // Belt-and-braces: the DB unique constraint on Payment.sessionId is the
+    // final authority — surface a duplicate insert as a clean 409 too.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return Response.json({ error: "Already paid" }, { status: 409 });
+    }
+    return dbErrorResponse(err);
   }
 }
 
@@ -354,8 +444,7 @@ export async function POST_advance(req: Request) {
 
     return Response.json({ ok: true, balance: newBalance });
   } catch (err) {
-    console.error("[api/advance]", err);
-    return Response.json({ error: "Internal server error" }, { status: 500 });
+    return dbErrorResponse(err);
   }
 }
 
@@ -390,6 +479,19 @@ function isOperatingWindow(now: Date, config: Record<string, string>): boolean {
   const openMinute = open[0] * 60 + open[1];
   const closeMinute = close[0] * 60 + close[1];
   return openMinute <= closeMinute ? minutes >= openMinute && minutes <= closeMinute : minutes >= openMinute || minutes <= closeMinute;
+}
+
+function isWithinShiftWindow(now: Date, shiftStart: string, shiftEnd: string, config: Record<string, string>): boolean {
+  const minutes = dhakaMinutes(now);
+  const earlyCheckin = configNumber(config, "EARLY_CHECKIN_MINUTES", 5);
+  const [sh, sm] = parseShiftTime(shiftStart);
+  const [eh, em] = parseShiftTime(shiftEnd);
+  let startMinute = (sh * 60 + sm) - earlyCheckin;
+  if (startMinute < 0) startMinute += 24 * 60;
+  const endMinute = eh * 60 + em;
+  return startMinute <= endMinute
+    ? minutes >= startMinute && minutes <= endMinute
+    : minutes >= startMinute || minutes <= endMinute;
 }
 
 function dhakaParts(date: Date) {
@@ -442,12 +544,12 @@ function getHourlyRate(staff: { salaryType: string; hourlyRate: number; dailyRat
   }
 }
 
-async function saveSession(id: string, data: object, managedBy: string | undefined, summary: string) {
+async function saveSession(id: string, data: object, actor: AuthSession, managedBy: string | undefined, summary: string) {
   await prisma.timeSession.update({ where: { id }, data: { ...data } as never });
   await prisma.auditLog.create({
     data: {
       action: "SESSION_UPDATE", entityType: "TimeSession", entityId: id,
-      actorName: managedBy ?? "staff", actorRole: "STAFF", summary, managedBy,
+      actorName: actor.name, actorRole: actor.role, summary, managedBy,
     },
   });
 }

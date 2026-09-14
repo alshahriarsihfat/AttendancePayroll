@@ -1,42 +1,26 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { prisma } from "@/server/db";
-import { ADMIN } from "@/lib/config";
+import { COOKIE_NAME, authSecret, decodeSession, encodeSession, type AuthSession } from "@/lib/auth-session";
+import { verifyPassword } from "@/lib/password";
 
 type StaffRecord = { employeeId: string; username: string; password: string; fullName: string; role: "STAFF" | "SUPERVISOR"; isActive: boolean };
-type AuthSession = { role: "ADMIN" | "SUPERVISOR" | "STAFF"; staffId?: string; name: string; loginAt: string; exp: number };
-
-const COOKIE_NAME = "attendance_session";
 const MAX_AGE = 8 * 60 * 60;
-const secret = () => process.env.AUTH_SECRET ?? (process.env.NODE_ENV === "production" ? "" : "AttendancePayroll-development-secret");
 const secureCookie = (request: Request) => new URL(request.url).protocol === "https:" ? "; Secure" : "";
 
-function sign(payload: string) {
-  return createHmac("sha256", secret()).update(payload).digest("base64url");
+function adminUsername(): string {
+  const u = process.env.ADMIN_USERNAME;
+  if (!u && process.env.NODE_ENV === "production") throw new Error("ADMIN_USERNAME is required in production");
+  return u ?? "admin";
 }
 
-function encode(session: AuthSession) {
-  const payload = Buffer.from(JSON.stringify(session)).toString("base64url");
-  return `${payload}.${sign(payload)}`;
-}
-
-function decode(value: string | undefined): AuthSession | null {
-  if (!value) return null;
-  const [payload, signature] = value.split(".");
-  if (!payload || !signature) return null;
-  const expected = sign(payload);
-  const valid = signature.length === expected.length && timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  if (!valid) return null;
-  try {
-    const session = JSON.parse(Buffer.from(payload, "base64url").toString()) as AuthSession;
-    return session.exp > Math.floor(Date.now() / 1000) ? session : null;
-  } catch {
-    return null;
-  }
+function adminPasswordHash(): string {
+  const h = process.env.ADMIN_PASSWORD_HASH;
+  if (!h && process.env.NODE_ENV === "production") throw new Error("ADMIN_PASSWORD_HASH is required in production");
+  return h ?? "";
 }
 
 export async function GET() {
-  const session = decode((await cookies()).get(COOKIE_NAME)?.value);
+  const session = decodeSession((await cookies()).get(COOKIE_NAME)?.value);
   return Response.json({ session: session ? { role: session.role, staffId: session.staffId, name: session.name, loginAt: session.loginAt } : null });
 }
 
@@ -45,20 +29,20 @@ export async function POST(request: Request) {
   const username = body.username?.trim().toLowerCase() ?? "";
   const password = body.password ?? "";
   let session: AuthSession | null = null;
-  if (!secret()) return Response.json({ error: "Authentication is not configured" }, { status: 503 });
+  if (!authSecret()) return Response.json({ error: "Authentication is not configured" }, { status: 503 });
 
-  if (username === ADMIN.USERNAME && password === ADMIN.PASSWORD) {
+  if (username === adminUsername() && verifyPassword(password, adminPasswordHash())) {
     session = { role: "ADMIN", name: "Admin", loginAt: new Date().toISOString(), exp: Math.floor(Date.now() / 1000) + MAX_AGE };
   } else {
     const staff = await prisma.staff.findUnique({ where: { username } });
-    if (staff && staff.password === password && staff.isActive) {
+    if (staff && staff.isActive && verifyPassword(password, staff.password)) {
       session = { role: staff.role, staffId: staff.employeeId, name: staff.fullName, loginAt: new Date().toISOString(), exp: Math.floor(Date.now() / 1000) + MAX_AGE };
     }
   }
 
   if (!session) return Response.json({ error: "Invalid credentials" }, { status: 401 });
   const response = Response.json({ ok: true, session: { role: session.role, staffId: session.staffId, name: session.name, loginAt: session.loginAt } });
-  response.headers.append("Set-Cookie", `${COOKIE_NAME}=${encode(session)}; Path=/; Max-Age=${MAX_AGE}; HttpOnly; SameSite=Lax${secureCookie(request)}`);
+  response.headers.append("Set-Cookie", `${COOKIE_NAME}=${encodeSession(session)}; Path=/; Max-Age=${MAX_AGE}; HttpOnly; SameSite=Lax${secureCookie(request)}`);
   return response;
 }
 
@@ -68,4 +52,4 @@ export async function DELETE(request: Request) {
   return response;
 }
 
-export { decode, COOKIE_NAME };
+export { decodeSession as decode, COOKIE_NAME };

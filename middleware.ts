@@ -1,18 +1,65 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+function base64UrlDecode(input: string): Uint8Array {
+  const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
 const COOKIE_NAME = "attendance_session";
-const secret = () => process.env.AUTH_SECRET ?? (process.env.NODE_ENV === "production" ? "" : "AttendancePayroll-development-secret");
+const secret = () => {
+  const s = process.env.AUTH_SECRET;
+  if (!s) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("AUTH_SECRET is required in production");
+    }
+    return "KPSMS-development-secret"; // dev-only fallback, never reaches prod
+  }
+  return s;
+};
+
+const ADMIN_ONLY_PREFIXES = [
+  "/api/staff",
+  "/api/payments",
+  "/api/advance",
+  "/api/config",
+  "/api/leave",
+];
+
+const ADMIN_ONLY_MUTATIONS = [
+  "/api/state",
+];
+
+function requiresElevatedRole(pathname: string, method: string): boolean {
+  if (ADMIN_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    return true;
+  }
+  if (ADMIN_ONLY_MUTATIONS.some((prefix) => pathname.startsWith(prefix)) && method !== "GET") {
+    return true;
+  }
+  return false;
+}
 
 async function validSession(value: string | undefined): Promise<{ role?: string } | null> {
   try {
-    if (!value || !secret()) return null;
+    if (!value) return null; // ✅ !secret() বাদ দিয়ে পরিষ্কার করা হয়েছে
     const [payload, signature] = value.split(".");
     if (!payload || !signature) return null;
+
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret()), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-    const signatureBytes = Uint8Array.from(atob(signature.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
-    const valid = await crypto.subtle.verify("HMAC", key, signatureBytes, new TextEncoder().encode(payload));
-    if (!valid) return null;
-    const session = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0)))) as { exp?: number; role?: string };
+    const signatureBytes = base64UrlDecode(signature);
+    const payloadBytes = base64UrlDecode(payload);
+
+    const isValid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signatureBytes as BufferSource,
+      new TextEncoder().encode(payload)
+    );
+    if (!isValid) return null;
+
+    const session = JSON.parse(new TextDecoder().decode(payloadBytes));
     return typeof session.exp === "number" && session.exp > Math.floor(Date.now() / 1000) ? session : null;
   } catch {
     return null;
@@ -21,16 +68,26 @@ async function validSession(value: string | undefined): Promise<{ role?: string 
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  if (pathname === "/login" || pathname.startsWith("/_next/") || pathname === "/favicon.ico" || pathname.startsWith("/api/auth")) return NextResponse.next();
   const session = await validSession(request.cookies.get(COOKIE_NAME)?.value);
-  if (session) {
-    if (pathname.startsWith("/api/staff") || pathname.startsWith("/api/payments") || pathname.startsWith("/api/advance") || pathname.startsWith("/api/config") || pathname.startsWith("/api/leave") || (pathname.startsWith("/api/state") && request.method !== "GET")) {
-      if (session.role !== "ADMIN" && session.role !== "SUPERVISOR") return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
-    }
+
+  if (pathname === "/login" || pathname.startsWith("/_next/") || pathname === "/favicon.ico" || pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
-  if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  return NextResponse.redirect(new URL("/login", request.url));
+
+  if (!session) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+    }
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  if (requiresElevatedRole(pathname, request.method)) {
+    if (session.role !== "ADMIN" && session.role !== "SUPERVISOR") {
+      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
+    }
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {

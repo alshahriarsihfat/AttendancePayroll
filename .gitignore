@@ -5,3 +5,5 @@ out/
 !.env.example
 *.tsbuildinfo
 .vercel/
+package-lock.json
+yarn.lock

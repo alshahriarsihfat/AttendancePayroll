@@ -55,9 +55,9 @@ export function Layout({ children }: { children: ReactNode }) {
   const Sidebar = (
     <div className="flex h-full flex-col">
       {/* Text-only brand header — no logo */}
-      <div className="px-5 py-5">
-        <p className="text-base font-extrabold tracking-tight text-white">AttendancePayroll</p>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-teal-300/80">Attendance &amp; Payroll</p>
+<div className="px-5 py-5">
+        <p className="text-base font-extrabold tracking-tight text-white">KPSMS</p>
+        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-teal-300/80">Khan Pharmacy Staff Management</p>
       </div>
       <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-2">
         {groups.map((g) => (
@@ -93,15 +93,15 @@ export function Layout({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
-      <aside className="pl-chrome hidden w-64 shrink-0 bg-slate-900 lg:block">{Sidebar}</aside>
+    <div className="flex h-screen overflow-hidden bg-slate-50 transform-gpu">
+      <aside className="pl-chrome hidden w-64 shrink-0 bg-slate-900 lg:block will-change-transform">{Sidebar}</aside>
       {mobileOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden">
+        <div className="fixed inset-0 z-40 lg:hidden transform-gpu">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
-          <aside className="absolute left-0 top-0 h-full w-64 bg-slate-900 animate-slide-up">{Sidebar}</aside>
+          <aside className="absolute left-0 top-0 h-full w-64 bg-slate-900 animate-slide-up will-change-transform">{Sidebar}</aside>
         </div>
       )}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col transform-gpu">
         <header className="pl-chrome flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:px-6">
           <button onClick={() => setMobileOpen(true)} className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 lg:hidden"><Icon name="menu" size={20} /></button>
           <div className="min-w-0 flex-1">
