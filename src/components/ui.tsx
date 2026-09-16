@@ -10,12 +10,12 @@ type Variant = "primary" | "secondary" | "ghost" | "danger" | "success" | "subtl
 type Size = "sm" | "md" | "lg";
 
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-200",
-  secondary: "bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50",
-  ghost: "text-slate-600 hover:bg-slate-100",
-  danger: "bg-rose-600 text-white hover:bg-rose-700 shadow-sm shadow-rose-200",
-  success: "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-200",
-  subtle: "bg-indigo-50 text-indigo-700 hover:bg-indigo-100",
+  primary: "bg-linear-to-br from-primary-deep to-primary-bright text-white hover:from-primary hover:to-primary-bright shadow-sm shadow-primary/25",
+  secondary: "bg-surface-muted text-foreground hover:bg-surface-muted/70",
+  ghost: "text-muted-foreground hover:bg-surface-muted hover:text-foreground",
+  danger: "bg-rose-600 text-white hover:bg-rose-700 shadow-sm shadow-rose-500/20",
+  success: "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-500/20",
+  subtle: "bg-primary-soft text-primary hover:bg-primary/15",
 };
 const SIZES: Record<Size, string> = {
   sm: "h-8 px-3 text-[13px]",
@@ -31,7 +31,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap",
+        "inline-flex items-center justify-center gap-2 rounded-full font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap active:scale-[0.99]",
         VARIANTS[variant], SIZES[size], className
       )}
       disabled={loading || rest.disabled}
@@ -53,7 +53,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40",
+        "inline-flex items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-40",
         dim, className
       )}
       {...rest}
@@ -75,7 +75,7 @@ export function Spinner({ size = 18, className }: { size?: number; className?: s
 
 // ---------------- Card -----------------------------------------------------
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/40", className)}>{children}</div>;
+  return <div className={cn("rounded-2xl bg-surface text-foreground shadow-card ring-1 ring-edge", className)}>{children}</div>;
 }
 
 export function SectionHeader({
@@ -85,13 +85,13 @@ export function SectionHeader({
     <div className={cn("flex items-start justify-between gap-4", className)}>
       <div className="flex items-start gap-3">
         {icon && (
-          <span className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+          <span className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-full bg-primary-soft text-primary">
             <Icon name={icon} size={18} />
           </span>
         )}
         <div>
-          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-sm text-slate-500">{subtitle}</p>}
+          <h2 className="text-base font-semibold text-foreground">{title}</h2>
+          {subtitle && <p className="mt-0.5 text-sm text-muted-foreground">{subtitle}</p>}
         </div>
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -106,7 +106,7 @@ export function Field({
   return (
     <label className={cn("block", className)}>
       {label && (
-        <span className="mb-1.5 flex items-center gap-1 text-[13px] font-medium text-slate-700">
+        <span className="mb-1.5 flex items-center gap-1 text-[13px] font-medium text-foreground">
           {label}{required && <span className="text-rose-500">*</span>}
         </span>
       )}
@@ -116,25 +116,25 @@ export function Field({
           <Icon name="alert" size={12} /> {error}
         </span>
       ) : hint ? (
-        <span className="mt-1 block text-xs text-slate-400">{hint}</span>
+        <span className="mt-1 block text-xs text-faint-foreground">{hint}</span>
       ) : null}
     </label>
   );
 }
 
 const inputCls =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-50 disabled:text-slate-400";
+  "w-full rounded-full border-0 bg-surface-muted px-4 py-2.5 text-sm text-foreground placeholder:text-faint-foreground transition focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:bg-surface-muted/60 disabled:text-faint-foreground";
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn(inputCls, className)} {...rest} />;
 }
 export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cn(inputCls, "resize-none", className)} {...rest} />;
+  return <textarea className={cn(inputCls, "rounded-2xl resize-none", className)} {...rest} />;
 }
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select className={cn(inputCls, "appearance-none bg-no-repeat pr-9", className)}
-      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundPosition: "right 0.6rem center" }}
+      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2398a2b3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")", backgroundPosition: "right 0.75rem center" }}
       {...rest}
     >
       {children}
@@ -158,27 +158,27 @@ export function Avatar({ name, size = 36, className }: { name: string; size?: nu
 export function EmptyState({ icon = "info", title, desc, action }: { icon?: IconName; title: string; desc?: string; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-14 text-center">
-      <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-400">
+      <span className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-surface-muted text-faint-foreground">
         <Icon name={icon} size={22} />
       </span>
-      <p className="text-sm font-semibold text-slate-700">{title}</p>
-      {desc && <p className="mt-1 max-w-sm text-sm text-slate-400">{desc}</p>}
+      <p className="text-sm font-semibold text-foreground">{title}</p>
+      {desc && <p className="mt-1 max-w-sm text-sm text-faint-foreground">{desc}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }
 
 export function Divider({ className }: { className?: string }) {
-  return <div className={cn("h-px w-full bg-slate-200", className)} />;
+  return <div className={cn("h-px w-full bg-edge", className)} />;
 }
 
 export function KeyStat({ label, value, sub, tone = "slate" }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "slate" | "emerald" | "rose" | "indigo" }) {
-  const toneCls = { slate: "text-slate-900", emerald: "text-emerald-600", rose: "text-rose-600", indigo: "text-indigo-600" }[tone];
+  const toneCls = { slate: "text-foreground", emerald: "text-emerald-600", rose: "text-rose-600", indigo: "text-primary" }[tone];
   return (
     <div>
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-faint-foreground">{label}</p>
       <p className={cn("mt-1 text-2xl font-bold tracking-tight tabular-nums", toneCls)}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      {sub && <p className="mt-0.5 text-xs text-faint-foreground">{sub}</p>}
     </div>
   );
 }

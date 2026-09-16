@@ -35,25 +35,25 @@ export function Modal({ open, onClose, title, subtitle, icon, children, footer, 
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm animate-fade" onClick={onClose} />
       {/* overflow-hidden + min-w-0 guarantees no horizontal leak on small screens */}
-      <div className={cn("relative z-10 flex max-h-[92vh] w-full max-w-full min-w-0 flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl animate-scale-in sm:rounded-2xl", SIZES[size])}>
+      <div className={cn("relative z-10 flex max-h-[92vh] w-full max-w-full min-w-0 flex-col overflow-hidden rounded-t-2xl bg-surface shadow-card-lg ring-1 ring-edge animate-scale-in sm:rounded-2xl", SIZES[size])}>
         {(title || icon) && (
-          <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4 sm:px-5">
+          <div className="flex items-start justify-between gap-3 border-b border-edge px-4 py-4 sm:px-5">
             <div className="flex min-w-0 items-start gap-3">
               {icon && (
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-soft text-primary">
                   <Icon name={icon} size={18} />
                 </span>
               )}
               <div className="min-w-0">
-                {title && <h3 className="text-base font-semibold text-slate-900">{title}</h3>}
-                {subtitle && <p className="mt-0.5 truncate text-sm text-slate-500">{subtitle}</p>}
+                {title && <h3 className="text-base font-semibold text-foreground">{title}</h3>}
+                {subtitle && <p className="mt-0.5 truncate text-sm text-muted-foreground">{subtitle}</p>}
               </div>
             </div>
             <IconButton icon="x" label="Close" onClick={onClose} className="shrink-0" />
           </div>
         )}
         <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-5">{children}</div>
-        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-5">{footer}</div>}
+        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-edge bg-surface-muted px-4 py-3 sm:px-5">{footer}</div>}
       </div>
     </div>
   );
@@ -72,14 +72,14 @@ export function ConfirmDialog({
           <Icon name={icon} size={22} />
         </span>
         <div className="flex-1">
-          <h3 className="text-base font-semibold text-slate-900">{title}</h3>
-          <div className="mt-1 text-sm text-slate-500">{message}</div>
+          <h3 className="text-base font-semibold text-foreground">{title}</h3>
+          <div className="mt-1 text-sm text-muted-foreground">{message}</div>
         </div>
       </div>
       <div className="mt-6 flex justify-end gap-2">
-        <button className="inline-flex h-10 items-center rounded-lg px-4 text-sm font-medium text-slate-600 hover:bg-slate-100" onClick={onClose}>Cancel</button>
+        <button className="inline-flex h-10 items-center rounded-full px-4 text-sm font-medium text-muted-foreground hover:bg-surface-muted hover:text-foreground" onClick={onClose}>Cancel</button>
         <button
-          className={cn("inline-flex h-10 items-center rounded-lg px-4 text-sm font-semibold text-white shadow-sm", danger ? "bg-rose-600 hover:bg-rose-700" : "bg-indigo-600 hover:bg-indigo-700")}
+          className={cn("inline-flex h-10 items-center rounded-full px-4 text-sm font-semibold text-white shadow-sm", danger ? "bg-rose-600 hover:bg-rose-700" : "bg-linear-to-br from-primary-deep to-primary-bright hover:from-primary hover:to-primary-bright")}
           onClick={() => { onConfirm(); onClose(); }}
         >
           {confirmLabel}

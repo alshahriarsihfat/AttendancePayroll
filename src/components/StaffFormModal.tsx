@@ -22,7 +22,12 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (editing) { setForm({ ...editing }); }
+    if (editing) {
+      // NEVER pre-fill the stored password on edit. A blank field means
+      // "keep the current password unchanged" — so unrelated corrections
+      // (phone, shift, salary…) are never blocked by a password requirement.
+      setForm({ ...editing, password: "" });
+    }
     else {
       // suggest the next available KP98 id + matching default username/password
       const ids = data.staff.map((s) => s.employeeId);
@@ -46,6 +51,9 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
       hourlyRate: Number(form.hourlyRate) || 0, mealBreakMin: Number(form.mealBreakMin) || 30,
       restMin: Number(form.restMin) || 15, counter: isPharma ? (form.counter ?? null) : null,
     };
+    // On edit a blank password is a no-op: omit it so the existing login
+    // password is kept exactly as-is (the server never re-hashes an empty string).
+    if (editing && !payload.password) delete payload.password;
     const res = editing ? updateStaff(editing.employeeId, payload) : createStaff(payload);
     if (!res.ok) { const m: Record<string, string> = {}; (res.errors as FieldError[] | undefined)?.forEach((e) => (m[e.field] = e.message)); setErrors(m); }
     else onClose();
@@ -79,20 +87,20 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
         <Divider />
         {/* Manual login credentials — admin-assigned */}
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Login Credentials</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Login Credentials</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Username" required error={errors.username} hint="Unique login name for this staff.">
               <Input value={form.username} onChange={(e) => set("username", e.target.value.toLowerCase())} placeholder="e.g. rahim" />
             </Field>
-            <Field label="Password" required error={errors.password} hint="Set a unique password.">
-              <Input value={form.password} onChange={(e) => set("password", e.target.value)} placeholder="e.g. 4271" />
+            <Field label="Password" required={!editing} error={errors.password} hint={editing ? "Leave blank to keep the current password." : "Set a unique password."}>
+              <Input value={form.password} onChange={(e) => set("password", e.target.value)} placeholder={editing ? "Leave blank to keep current" : "Set a password"} />
             </Field>
           </div>
         </div>
 
         <Divider />
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Role & Assignment</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Role & Assignment</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Role / Access">
               <Select value={form.role} onChange={(e) => set("role", e.target.value as EmpRole)}>
@@ -111,27 +119,27 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
 
           {/* Counter config box — only for Pharmacy Counter */}
           {isPharma && (
-            <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700"><span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-600 text-white"><span className="text-[11px] font-bold">C</span></span> Pharmacy Counter Assignment</p>
-              <p className="mt-1 text-xs text-emerald-600/80">Allocate this staff to one of the 9 counters.</p>
+            <div className="mt-3 rounded-2xl border border-primary/25 bg-primary-soft/60 p-4">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-primary"><span className="flex h-6 w-6 items-center justify-center rounded-full bg-linear-to-br from-primary-deep to-primary-bright text-white"><span className="text-[11px] font-bold">C</span></span> Pharmacy Counter Assignment</p>
+              <p className="mt-1 text-xs text-primary/80">Allocate this staff to one of the 9 counters.</p>
               <div className="mt-3 grid grid-cols-5 gap-2 sm:grid-cols-9">
                 {COUNTER_NUMBERS.map((n) => (
                   <button key={n} type="button" onClick={() => set("counter", form.counter === n ? null : n)}
-                    className={`flex h-10 items-center justify-center rounded-lg text-sm font-bold transition ${form.counter === n ? "bg-emerald-600 text-white shadow-sm" : "bg-white text-slate-600 ring-1 ring-inset ring-slate-200 hover:bg-emerald-50"}`}>
+                    className={`flex h-10 items-center justify-center rounded-lg text-sm font-bold transition ${form.counter === n ? "bg-linear-to-r from-primary-deep to-primary-bright text-white shadow-md shadow-primary/25" : "bg-surface text-muted-foreground ring-1 ring-inset ring-edge hover:bg-primary-soft"}`}>
                     {n}
                   </button>
                 ))}
               </div>
-              {form.counter && <button type="button" onClick={() => set("counter", null)} className="mt-2 text-xs font-medium text-slate-400 hover:text-rose-500">Clear counter</button>}
+              {form.counter && <button type="button" onClick={() => set("counter", null)} className="mt-2 text-xs font-medium text-faint-foreground hover:text-rose-500">Clear counter</button>}
             </div>
           )}
         </div>
 
         <Divider />
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Custom Shift (9AM–11PM window)</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Shift Hours ({form.shiftStart || "..:.."} – {form.shiftEnd || "..:.."})</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Shift Template" hint="Pick to pre-fill, then customize">
+            <Field label="Shift Template" hint="Pick to pre-fill the preset hours, then customize below.">
               <Select value={form.shiftId} onChange={(e) => applyShift(e.target.value)}>
                 {data.shifts.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </Select>
@@ -146,7 +154,7 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
 
         <Divider />
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Salary Structure <span className="font-normal text-slate-300">(hidden from staff role)</span></p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Salary Structure <span className="font-normal text-faint-foreground">(hidden from staff role)</span></p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Salary Type" required error={errors.salaryType}>
               <Select value={form.salaryType} onChange={(e) => set("salaryType", e.target.value as SalaryType)}>

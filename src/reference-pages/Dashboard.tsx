@@ -16,46 +16,58 @@ import type { Employee } from "../types";
 type Tab = "overview" | "floor" | "staff" | "counters";
 
 export function Dashboard() {
-  const { data, navigate, assignCounter } = useApp();
+  const { data, role, navigate, assignCounter, canPerm } = useApp();
   const now = useNow(5000);
-  const [tab, setTab] = useState<Tab>("overview");
+  // Live Floor is the primary operational landing page for supervisors, so the
+  // internal Dashboard tab follows that — everyone else starts on Overview.
+  const [tab, setTab] = useState<Tab>(role === "SUPERVISOR" ? "floor" : "overview");
   const [pickFor, setPickFor] = useState<number | null>(null);
 
+  // Supervisors can land here on login/refresh, so the Admin-only Staff roster
+  // and Counter reassignment tabs are gated behind manage.staff — a hidden
+  // sidebar shortcut means nothing if the content itself isn't permission-aware.
+  const canManageStaff = canPerm("manage.staff");
   const tabs: { key: Tab; label: string; icon: IconName }[] = [
     { key: "overview", label: "Overview", icon: "dashboard" },
     { key: "floor", label: "Live Floor", icon: "store" },
-    { key: "staff", label: "Staff", icon: "users2" },
-    { key: "counters", label: "Counters", icon: "store" },
+    ...(canManageStaff
+      ? [
+          { key: "staff" as Tab, label: "Staff", icon: "users2" as IconName },
+          { key: "counters" as Tab, label: "Counters", icon: "store" as IconName },
+        ]
+      : []),
   ];
+  // Keep the state in a valid range if a role switch removed the active tab.
+  const activeTab: Tab = canManageStaff ? tab : tab === "staff" || tab === "counters" ? "overview" : tab;
 
   return (
     <div className="space-y-5 animate-fade">
       {/* Hero */}
       <Card className="overflow-hidden">
-        <div className="relative bg-linear-to-br from-emerald-700 via-teal-700 to-emerald-900 p-6 text-white">
+        <div className="relative bg-linear-to-br from-primary-deep via-primary to-primary-bright p-6 text-white">
           <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl" />
           <div className="relative flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-emerald-200">{configValue(data.config, "ORG_NAME", "Khan Pharmacy")}</p>
-              <h2 className="mt-1 text-2xl font-bold tracking-tight">Admin Control Center</h2>
-              <p className="mt-1.5 text-sm text-emerald-100/80">Floor tracking 9:00 AM – 11:00 PM · {formatTime12(new Date(now).toISOString())}</p>
+              <p className="text-xs font-medium uppercase tracking-wider text-blue-100/90">{configValue(data.config, "ORG_NAME", "Khan Pharmacy")}</p>
+              <h2 className="mt-1 text-2xl font-bold tracking-tight">{role === "SUPERVISOR" ? "Supervisor Control Center" : "Admin Control Center"}</h2>
+              <p className="mt-1.5 text-sm text-blue-50/85">Floor tracking 9:00 AM – 11:00 PM · {formatTime12(new Date(now).toISOString())}</p>
             </div>
           </div>
         </div>
         {/* Tabs */}
-        <div className="flex overflow-x-auto border-b border-slate-200">
+        <div className="flex overflow-x-auto border-b border-edge">
           {tabs.map((t) => (
-            <button key={t.key} onClick={() => setTab(t.key)} className={cn("flex shrink-0 items-center gap-2 px-5 py-3 text-sm font-semibold transition", tab === t.key ? "border-b-2 border-emerald-600 text-emerald-700" : "text-slate-500 hover:text-slate-800")}>
+            <button key={t.key} onClick={() => setTab(t.key)} className={cn("flex shrink-0 items-center gap-2 px-5 py-3 text-sm font-semibold transition", activeTab === t.key ? "border-b-2 border-primary text-primary" : "text-muted-foreground hover:text-foreground")}>
               <Icon name={t.icon} size={16} /> {t.label}
             </button>
           ))}
         </div>
       </Card>
 
-      {tab === "overview" && <Overview navigate={navigate} />}
-      {tab === "floor" && <Monitor />}
-      {tab === "staff" && <Staff />}
-      {tab === "counters" && <Counters pickFor={pickFor} setPickFor={setPickFor} onAssign={assignCounter} />}
+      {activeTab === "overview" && <Overview navigate={navigate} />}
+      {activeTab === "floor" && <Monitor />}
+      {activeTab === "staff" && canManageStaff && <Staff />}
+      {activeTab === "counters" && canManageStaff && <Counters pickFor={pickFor} setPickFor={setPickFor} onAssign={assignCounter} />}
     </div>
   );
 }
@@ -89,7 +101,7 @@ function Overview({ navigate }: { navigate: (p: "monitor" | "staff" | "leave" | 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card className="p-5">
           <div className="flex items-center justify-between">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Icon name="calendar" size={16} className="text-emerald-600" /> On Leave Today</h3>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground"><Icon name="calendar" size={16} className="text-amber-600" /> On Leave Today</h3>
             <Button size="sm" variant="ghost" onClick={() => navigate("leave")}>Manage</Button>
           </div>
           <div className="mt-4">
@@ -101,7 +113,7 @@ function Overview({ navigate }: { navigate: (p: "monitor" | "staff" | "leave" | 
                   return (
                     <div key={s.employeeId} className="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3">
                       <PhotoAvatar name={s.fullName} photoUrl={s.photoUrl} size={36} />
-                      <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-800">{s.fullName}</p><p className="text-xs text-slate-400">{s.employeeId} · {rem}d annual left</p></div>
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{s.fullName}</p><p className="text-xs text-faint-foreground">{s.employeeId} · {rem}d annual left</p></div>
                     </div>
                   );
                 })}
@@ -112,17 +124,17 @@ function Overview({ navigate }: { navigate: (p: "monitor" | "staff" | "leave" | 
 
         <Card className="p-5">
           <div className="flex items-center justify-between">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Icon name="store" size={16} className="text-emerald-600" /> Counter Coverage</h3>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground"><Icon name="store" size={16} className="text-primary" /> Counter Coverage</h3>
             <Button size="sm" variant="ghost" onClick={() => navigate("staff")}>All staff</Button>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-2">
             {COUNTER_NUMBERS.map((n) => {
               const s = active.find((x) => x.counter === n && x.department === "Pharmacy Counter");
               return (
-                <div key={n} className={cn("rounded-lg border p-2 text-center", s ? "border-emerald-200 bg-emerald-50/50" : "border-dashed border-slate-200")}>
-                  <p className="text-[10px] font-bold uppercase text-slate-400">Counter {n}</p>
-                  {s ? <PhotoAvatar name={s.fullName} photoUrl={s.photoUrl} size={28} /> : <span className="mx-auto mt-1 block text-lg text-slate-300">—</span>}
-                  {s && <p className="mt-1 truncate text-[10px] text-slate-500">{s.fullName.split(" ")[0]}</p>}
+                <div key={n} className={cn("rounded-lg border p-2 text-center", s ? "border-primary/30 bg-primary-soft/60" : "border-dashed border-edge")}>
+                  <p className="text-[10px] font-bold uppercase text-faint-foreground">Counter {n}</p>
+                  {s ? <PhotoAvatar name={s.fullName} photoUrl={s.photoUrl} size={28} /> : <span className="mx-auto mt-1 block text-lg text-faint-foreground">—</span>}
+                  {s && <p className="mt-1 truncate text-[10px] text-muted-foreground">{s.fullName.split(" ")[0]}</p>}
                 </div>
               );
             })}
@@ -140,25 +152,25 @@ function Counters({ pickFor, setPickFor, onAssign }: { pickFor: number | null; s
 
   return (
     <div className="space-y-5">
-      <Card className="border-emerald-200 bg-emerald-50/30 p-5">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-emerald-800"><Icon name="store" size={16} /> Pharmacy Counter Management</h3>
-        <p className="mt-1 text-sm text-emerald-700/80">9 designated counters. Assign or reassign staff to any counter.</p>
+      <Card className="border-primary/30 bg-primary-soft/40 p-5">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-primary"><Icon name="store" size={16} /> Pharmacy Counter Management</h3>
+        <p className="mt-1 text-sm text-primary/80">9 designated counters. Assign or reassign staff to any counter.</p>
       </Card>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {COUNTER_NUMBERS.map((n) => {
           const s = assigned(n);
           return (
-            <Card key={n} className={cn("p-5", s && "border-emerald-200")}>
+            <Card key={n} className={cn("p-5", s && "border-primary/30")}>
               <div className="flex items-center justify-between">
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-600 text-sm font-bold text-white">C{n}</span>
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-linear-to-br from-primary-deep to-primary-bright text-sm font-bold text-white">C{n}</span>
                 {s ? <StatusBadge text="Assigned" tone="emerald" /> : <StatusBadge text="Empty" tone="slate" />}
               </div>
               {s ? (
                 <div className="mt-4 flex items-center gap-3">
                   <PhotoAvatar name={s.fullName} photoUrl={s.photoUrl} size={40} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-slate-900">{s.fullName}</p>
-                    <p className="truncate text-xs text-slate-400">{s.jobTitle} · {s.employeeId}</p>
+                    <p className="truncate font-semibold text-foreground">{s.fullName}</p>
+                    <p className="truncate text-xs text-faint-foreground">{s.jobTitle} · {s.employeeId}</p>
                   </div>
                   <Button size="sm" variant="secondary" icon="pencil" onClick={() => setPickFor(n)}>Change</Button>
                 </div>
@@ -185,24 +197,24 @@ function PickerModal({ counter, active, current, onClose, onPick, onClear }: { c
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md overflow-hidden rounded-t-2xl bg-white shadow-2xl animate-scale-in sm:rounded-2xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h3 className="text-base font-semibold text-slate-900">Assign to Counter {counter}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><Icon name="x" size={18} /></button>
+      <div className="relative z-10 w-full max-w-md overflow-hidden rounded-t-2xl bg-surface shadow-2xl animate-scale-in sm:rounded-2xl">
+        <div className="flex items-center justify-between border-b border-edge px-5 py-4">
+          <h3 className="text-base font-semibold text-foreground">Assign to Counter {counter}</h3>
+          <button onClick={onClose} className="text-faint-foreground hover:text-foreground"><Icon name="x" size={18} /></button>
         </div>
         <div className="p-4">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search staff…" className="mb-3 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search staff…" className="mb-3 h-10 w-full rounded-full border-0 bg-surface-muted px-4 pl-10 text-sm text-foreground placeholder:text-faint-foreground focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/25" />
           <div className="max-h-72 space-y-1 overflow-y-auto">
             {list.map((s) => (
-              <button key={s.employeeId} onClick={() => onPick(s.employeeId)} className={cn("flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-slate-50", current === s.employeeId && "bg-emerald-50")}>
+              <button key={s.employeeId} onClick={() => onPick(s.employeeId)} className={cn("flex w-full items-center gap-3 rounded-2xl p-2 text-left transition hover:bg-surface-muted", current === s.employeeId && "bg-primary-soft")}>
                 <PhotoAvatar name={s.fullName} photoUrl={s.photoUrl} size={34} />
-                <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-900">{s.fullName}</p><p className="truncate text-xs text-slate-400">{s.jobTitle} · {s.employeeId}{s.counter ? ` · now C${s.counter}` : ""}</p></div>
-                {current === s.employeeId && <Icon name="check" size={16} className="text-emerald-600" />}
+                <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{s.fullName}</p><p className="truncate text-xs text-faint-foreground">{s.jobTitle} · {s.employeeId}{s.counter ? ` · now C${s.counter}` : ""}</p></div>
+                {current === s.employeeId && <Icon name="check" size={16} className="text-primary" />}
               </button>
             ))}
-            {list.length === 0 && <p className="py-6 text-center text-sm text-slate-400">No matching staff.</p>}
+            {list.length === 0 && <p className="py-6 text-center text-sm text-faint-foreground">No matching staff.</p>}
           </div>
-          {current && <button onClick={onClear} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50"><Icon name="x" size={15} /> Clear counter {counter}</button>}
+          {current && <button onClick={onClear} className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-full border border-rose-200 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50"><Icon name="x" size={15} /> Clear counter {counter}</button>}
         </div>
       </div>
     </div>
@@ -210,25 +222,25 @@ function PickerModal({ counter, active, current, onClose, onPick, onClear }: { c
 }
 
 function Kpi({ icon, tone, label, value, sub, action }: { icon: IconName; tone: "indigo" | "emerald" | "amber"; label: string; value: string; sub?: string; action?: () => void }) {
-  const c = { indigo: "bg-indigo-50 text-indigo-600", emerald: "bg-emerald-50 text-emerald-600", amber: "bg-amber-50 text-amber-600" }[tone];
-  const tc = { indigo: "text-indigo-600", emerald: "text-emerald-600", amber: "text-amber-600" }[tone];
+  const c = { indigo: "bg-primary-soft text-primary", emerald: "bg-emerald-50 text-emerald-600", amber: "bg-amber-50 text-amber-600" }[tone];
+  const tc = { indigo: "text-primary", emerald: "text-emerald-600", amber: "text-amber-600" }[tone];
   return (
     <Card className="p-5">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-faint-foreground">{label}</p>
           <p className={cn("mt-1 text-2xl font-bold tabular-nums", tc)}>{value}</p>
-          {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+          {sub && <p className="mt-0.5 text-xs text-faint-foreground">{sub}</p>}
         </div>
         <span className={cn("flex h-9 w-9 items-center justify-center rounded-lg", c)}><Icon name={icon} size={18} /></span>
       </div>
-      {action && <button onClick={action} className="mt-2 text-xs font-semibold text-emerald-600 hover:underline">View →</button>}
+      {action && <button onClick={action} className="mt-2 text-xs font-semibold text-primary hover:underline hover:text-primary/80">View →</button>}
     </Card>
   );
 }
 
 function StatusBadge({ text, tone }: { text: string; tone: "emerald" | "slate" }) {
-  return <span className={cn("rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset", tone === "emerald" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-slate-100 text-slate-500 ring-slate-200")}>{text}</span>;
+  return <span className={cn("rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset", tone === "emerald" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-surface-muted text-muted-foreground ring-edge")}>{text}</span>;
 }
 
 

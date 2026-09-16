@@ -5,6 +5,7 @@ import type {
 import { DEFAULT_CONFIG } from "./config";
 import { uid } from "./utils";
 import { isoDate, workingDaysBetween } from "./dates";
+import { parseTime12 } from "./timeclock";
 
 // ============================================================================
 // KPSMS — SYNTHETIC demo data. Never real PII.
@@ -101,8 +102,18 @@ const inHours = (h: number) => iso(new Date(Date.now() + h * 3600000));
 // Live sessions today in varied states.
 function buildSessions(): TimeSession[] {
   const dateISO = isoDate(new Date());
+  // Seed sessions carry a shift snapshot matching each staff member's seeded
+  // shift — so demo data exercises the same historical-fidelity path real
+  // clock-ins use (nothing here is a pre-snapshot "legacy" record).
+  const snapFor = (staffId: string) => {
+    const s = STAFF_SEED.find((x) => x.id === staffId);
+    if (!s) return {};
+    const startMin = parseTime12(s.shiftStart);
+    const endMin = parseTime12(s.shiftEnd);
+    return { shiftStartMin: startMin, shiftEndMin: endMin, shiftStartTime: s.shiftStart, shiftEndTime: s.shiftEnd };
+  };
   const mk = (staffId: string, timeInISO: string, breaks: BreakEvent[], timeOutISO: string | null, completed = false): TimeSession =>
-    ({ id: uid("SES"), staffId, date: dateISO, timeIn: timeInISO, timeOut: timeOutISO, breaks, extraTime: [], goOuts: [], completed });
+    ({ id: uid("SES"), staffId, date: dateISO, timeIn: timeInISO, timeOut: timeOutISO, breaks, extraTime: [], goOuts: [], completed, ...snapFor(staffId) });
 
   /** A completed shift from N days ago with no payment → registers as UNPAID due. */
   const mkUnpaid = (staffId: string, daysAgo: number, hoursWorked: number): TimeSession => {
@@ -115,6 +126,7 @@ function buildSessions(): TimeSession[] {
       id: uid("SES"), staffId, date: dayISO,
       timeIn: timeIn.toISOString(), timeOut: timeOut.toISOString(),
       breaks: [], extraTime: [], goOuts: [], completed: true,
+      ...snapFor(staffId),
     };
   };
 
@@ -204,6 +216,7 @@ function buildPaymentsAndOvertime(staff: Employee[]): { payments: Payment[]; ove
       dutyHours: 8, workedMin: grossMin, breakMin: x.brk, overBreakMin: x.over,
       overtimeMin: x.ot, overtimePay: Math.round(otPay * 100) / 100, hourlyRate: rate,
       grossPay: Math.round(gross * 100) / 100, overBreakDeduction: Math.round(ded * 100) / 100,
+      advanceAdjusted: 0,
       netPay: Math.round((gross - ded + otPay) * 100) / 100, status: "Paid", paidBy: "Supervisor",
     });
     if (x.ot > 0) {

@@ -22,7 +22,7 @@ export function Logo({ className, size = 48 }: { className?: string; size?: numb
       height={size}
       onError={() => { if (src !== FALLBACK_LOGO) setSrc(FALLBACK_LOGO); }}
       referrerPolicy="no-referrer"
-      className={cn("rounded-xl object-cover ring-1 ring-black/5", className)}
+      className={cn("rounded-xl object-cover ring-1 ring-edge ", className)}
       style={{ width: size, height: size }}
     />
   );

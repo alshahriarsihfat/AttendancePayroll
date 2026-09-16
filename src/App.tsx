@@ -14,14 +14,17 @@ import { Settings } from "./reference-pages/Settings";
 import { Guide } from "./reference-pages/Guide";
 import { StaffTime } from "./reference-pages/StaffTime";
 import { ClockTerminal } from "./reference-pages/ClockTerminal";
+import { AttendanceHub } from "./reference-pages/AttendanceHub";
 
 function Router() {
-  const { view } = useApp();
+  const { view, role } = useApp();
   switch (view.page) {
     case "dashboard": return <Dashboard />;
     case "monitor": return <Monitor />;
     case "staff": return <Staff />;
-    case "attendance": return <Attendance />;
+    // Admins keep the historical Attendance report; supervisors get the
+    // unified Attendance grid with in-place clock terminal controls.
+    case "attendance": return role === "ADMIN" ? <Attendance /> : <AttendanceHub />;
     case "leave": return <Leave />;
     case "payments": return <Payments />;
     case "payslip": return <PayslipView />;
@@ -34,12 +37,13 @@ function Router() {
 }
 
 function Shell() {
-  const { session, hydrated, role, view, mustClockInFirst } = useApp();
-  if (!hydrated) return <div className="min-h-screen bg-slate-50" aria-busy="true" />;
+  const { session, hydrated, role } = useApp();
+  if (!hydrated) return <div className="min-h-screen bg-page" aria-busy="true" />;
   if (!session) return <PinLogin />;
-  // Staff, and supervisors who haven't clocked in yet, get the full-screen clock terminal.
+  // Staff are always routed to the full-screen clock terminal. Supervisors get
+  // the app shell and manage clocking (their own + staff) from the unified
+  // Attendance grid — no isolated single-user clock page.
   if (role === "STAFF") return <ClockTerminal />;
-  if (role === "SUPERVISOR" && (mustClockInFirst || view.page === "terminal")) return <ClockTerminal />;
   return (
     <Layout>
       <Router />

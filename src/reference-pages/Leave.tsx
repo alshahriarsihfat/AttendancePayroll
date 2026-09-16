@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Card, Button, Select, Input, Field, Textarea, EmptyState } from "../components/ui";
 import { PhotoAvatar } from "../components/PhotoAvatar";
+import { HeroBand } from "../components/HeroBand";
 import { StatusBadge } from "../components/StatusBadge";
 import { Icon } from "../components/icons";
 import { Modal } from "../components/Modal";
@@ -23,6 +24,12 @@ export function Leave() {
   const noteSubmitting = useRef(false);
 
   const myId = role === "STAFF" ? session?.staffId : undefined;
+  const leaveStats = useMemo(() => ({
+    pending: data.leaveRequests.filter((r) => r.status === "Pending").length,
+    approved: data.leaveRequests.filter((r) => r.status === "Approved").length,
+    rejected: data.leaveRequests.filter((r) => r.status === "Rejected").length,
+  }), [data.leaveRequests]);
+
   const requests = useMemo(() => {
     return data.leaveRequests
       .filter((r) => (myId ? r.staffId === myId : true))
@@ -32,13 +39,30 @@ export function Leave() {
 
   return (
     <div className="space-y-5 animate-fade">
+      <HeroBand
+        eyebrow="Leave Management"
+        title="Leave Requests"
+        subtitle="Approve, reject or track leave for every staff member, with balances always in view."
+        icon="calendar"
+        stats={[
+          { label: "Pending", value: leaveStats.pending, icon: "clock" },
+          { label: "Approved", value: leaveStats.approved, icon: "check" },
+          { label: "Rejected", value: leaveStats.rejected, icon: "x" },
+        ]}
+        right={
+          <button onClick={() => setModal(true)} className="inline-flex items-center gap-2 rounded-full bg-linear-to-r from-primary-deep to-primary-bright px-4 py-2 text-sm font-bold text-white shadow-md shadow-primary/30 transition hover:from-primary hover:to-primary-bright">
+            <Icon name="plus" size={16} /> New Request
+          </button>
+        }
+      />
+
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
           <Card className="p-2">
             <div className="flex gap-1">
               {FILTERS.map((f) => (
                 <button key={f.key} onClick={() => setFilter(f.key)}
-                  className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${filter === f.key ? "bg-emerald-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                  className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition ${filter === f.key ? "rounded-full bg-linear-to-r from-primary-deep to-primary-bright text-white shadow-md shadow-primary/25" : "text-muted-foreground hover:bg-surface-muted"}`}>
                   {f.label}
                 </button>
               ))}
@@ -55,15 +79,15 @@ export function Leave() {
                       <PhotoAvatar name={s?.fullName ?? "?"} photoUrl={s?.photoUrl} size={42} />
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-semibold text-slate-900">{s?.fullName}</p>
-                          <span className="rounded-md bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600">{r.leaveType}</span>
+                          <p className="font-semibold text-foreground">{s?.fullName}</p>
+                          <span className="rounded-md bg-surface-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">{r.leaveType}</span>
                           <StatusBadge status={r.status} />
                         </div>
-                        <p className="mt-1 text-sm text-slate-500">{formatDate(r.fromDate)} → {formatDate(r.toDate)} · <span className="font-medium text-slate-700">{r.days} day{r.days === 1 ? "" : "s"}</span></p>
-                        {r.reason && <p className="mt-1 text-sm text-slate-600">“{r.reason}”</p>}
+                        <p className="mt-1 text-sm text-muted-foreground">{formatDate(r.fromDate)} → {formatDate(r.toDate)} · <span className="font-medium text-foreground">{r.days} day{r.days === 1 ? "" : "s"}</span></p>
+                        {r.reason && <p className="mt-1 text-sm text-muted-foreground">“{r.reason}”</p>}
                         {r.comment && (
-                          <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                            <Icon name="info" size={13} className="mt-0.5 shrink-0 text-slate-400" />
+                          <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-surface-muted px-3 py-2 text-xs text-muted-foreground">
+                            <Icon name="info" size={13} className="mt-0.5 shrink-0 text-faint-foreground" />
                             <span><b>Reviewer note:</b> {r.comment}</span>
                           </p>
                         )}
@@ -85,8 +109,8 @@ export function Leave() {
         <div className="space-y-4">
           <Card className="p-5">
             <div className="flex items-center gap-2.5">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600"><Icon name="calendar" size={18} /></span>
-              <div><p className="text-sm font-semibold text-slate-900">Request Leave</p><p className="text-xs text-slate-400">Submit for approval</p></div>
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-soft text-primary shadow-sm shadow-primary/20"><Icon name="calendar" size={18} /></span>
+              <div><p className="text-sm font-semibold text-foreground">Request Leave</p><p className="text-xs text-faint-foreground">Submit for approval</p></div>
             </div>
             <Button className="mt-4 w-full" icon="plus" onClick={() => setModal(true)}>New Request</Button>
           </Card>
@@ -129,18 +153,18 @@ function MyBalances({ staffId }: { staffId: string }) {
   const bal = data.leaveBalances.filter((b) => b.staffId === staffId);
   return (
     <Card className="p-5">
-      <p className="text-sm font-semibold text-slate-900">My Leave Balance</p>
+      <p className="text-sm font-semibold text-foreground">My Leave Balance</p>
       <div className="mt-4 space-y-4">
-        {bal.length === 0 ? <p className="text-sm text-slate-400">No balances.</p> : bal.map((b) => {
+        {bal.length === 0 ? <p className="text-sm text-faint-foreground">No balances.</p> : bal.map((b) => {
           const rem = b.entitledDays - b.usedDays;
           return (
             <div key={b.leaveType}>
               <div className="flex items-center justify-between text-sm">
-                <span className="font-medium text-slate-700">{b.leaveType}</span>
-                <span className="tabular-nums text-slate-500"><span className="font-semibold text-emerald-600">{rem}</span> / {b.entitledDays}d left</span>
+                <span className="font-medium text-foreground">{b.leaveType}</span>
+                <span className="tabular-nums text-muted-foreground"><span className="font-semibold text-emerald-600">{rem}</span> / {b.entitledDays}d left</span>
               </div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-500" style={{ width: `${Math.min(100, (rem / b.entitledDays) * 100)}%` }} />
+              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-muted">
+                <div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-emerald-400" style={{ width: `${Math.min(100, (rem / b.entitledDays) * 100)}%` }} />
               </div>
             </div>
           );
@@ -190,10 +214,10 @@ function RequestModal({ onClose }: { onClose: () => void }) {
         <Field label="Reason" required={leaveType === "Sick"} error={errors.reason}>
           <Textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Brief reason…" />
         </Field>
-        <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3 text-sm">
-          <span className="text-slate-500">Working days</span><span className="font-semibold tabular-nums text-slate-900">{days} day{days === 1 ? "" : "s"}</span>
+        <div className="flex items-center justify-between rounded-lg bg-surface-muted px-4 py-3 text-sm">
+          <span className="text-muted-foreground">Working days</span><span className="font-semibold tabular-nums text-foreground">{days} day{days === 1 ? "" : "s"}</span>
         </div>
-        {bal && <p className="text-xs text-slate-400">{leaveType} balance: {remaining} day{remaining === 1 ? "" : "s"} remaining.</p>}
+        {bal && <p className="text-xs text-faint-foreground">{leaveType} balance: {remaining} day{remaining === 1 ? "" : "s"} remaining.</p>}
       </div>
     </Modal>
   );

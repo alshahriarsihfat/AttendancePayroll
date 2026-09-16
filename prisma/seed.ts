@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { createSeedData } from "../src/lib/seed";
 import { hashPassword } from "../src/lib/password";
 import { prisma } from "../src/server/db";
@@ -21,7 +22,7 @@ const statusMap = {
 } as const;
 
 async function main() {
-  const { staff } = createSeedData();
+  const { staff, leaveRequests, leaveBalances } = createSeedData();
 
   for (const employee of staff) {
     const hashedPassword = hashPassword(employee.password);
@@ -85,7 +86,56 @@ async function main() {
     });
   }
 
-  console.log(`Seeded ${staff.length} staff records.`);
+  // ---------------------------------------------------------------------------
+  // Leave requests + balances
+  // The GET /api/state handler now serves leave rows straight from the DB
+  // (they overlay the old client-side snapshot). Without seeding them here the
+  // Admin/Supervisor approval queues would be EMPTY on a fresh deployment even
+  // though the app's sample data shows pending leave. Seed the same records the
+  // client demo generates so the queues populate on first login.
+  // ---------------------------------------------------------------------------
+  for (const req of leaveRequests) {
+    await prisma.leaveRequest.upsert({
+      where: { id: req.recordId },
+      create: {
+        id: req.recordId,
+        staffId: req.staffId,
+        leaveType: req.leaveType,
+        // Dhaka midnight — identical calendar day in UTC and +06:00 servers.
+        fromDate: new Date(`${req.fromDate}T00:00:00+06:00`),
+        toDate: new Date(`${req.toDate}T00:00:00+06:00`),
+        days: req.days,
+        reason: req.reason || null,
+        status: req.status,
+        approvedBy: req.approvedBy ?? null,
+        approvedAt: req.approvedAt ? new Date(req.approvedAt) : null,
+        comment: req.comment ?? null,
+      },
+      update: {},
+    });
+  }
+
+  for (const bal of leaveBalances) {
+    await prisma.leaveBalance.upsert({
+      where: {
+        staffId_leaveType_year: {
+          staffId: bal.staffId,
+          leaveType: bal.leaveType,
+          year: bal.year,
+        },
+      },
+      create: {
+        staffId: bal.staffId,
+        leaveType: bal.leaveType,
+        entitledDays: bal.entitledDays,
+        usedDays: bal.usedDays,
+        year: bal.year,
+      },
+      update: {},
+    });
+  }
+
+  console.log(`Seeded ${staff.length} staff, ${leaveRequests.length} leave requests, ${leaveBalances.length} leave balances.`);
 }
 
 main()

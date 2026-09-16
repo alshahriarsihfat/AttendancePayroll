@@ -9,14 +9,14 @@ import { Modal } from "../components/Modal";
 import { Icon } from "../components/icons";
 import { ClockInModal, ClockOutConfirm } from "../components/QuoteModal";
 import { StaffSelector } from "./StaffTime";
-import { empShift, computeSession, scheduledBoundary, nextShiftAt, isWithinIndividualShiftWindow, dhakaTodayKey } from "../lib/timeclock";
+import { empShift, computeSession, scheduledShiftBounds, nextShiftAt, isWithinIndividualShiftWindow, dhakaTodayKey } from "../lib/timeclock";
 import { formatCountdown, formatElapsed, formatTime12, formatDuration, formatLongDate, formatMinSec, formatLongDuration } from "../lib/dates";
 import { cn } from "../lib/utils";
 import { MOTIVATION_QUOTES, pickRandom, configValue } from "../lib/config";
 import type { BreakType, LeaveRequest, LeaveType, TimeSession } from "../types";
 
-export function ClockTerminal({ targetStaffId }: { targetStaffId?: string }) {
-  const { session, data, staffById, todaySession, isOnLeaveToday, clockOut, startBreak, endBreak, toggleExtraTime, startGoOut, endGoOut, logout, navigate, submitLeave, refreshData, toast } = useApp();
+export function ClockTerminal({ targetStaffId, onExit, embedded = false }: { targetStaffId?: string; onExit?: () => void; embedded?: boolean }) {
+  const { session, data, staffById, todaySession, isOnLeaveToday, clockOut, startBreak, endBreak, toggleExtraTime, startGoOut, endGoOut, logout, navigate, submitLeave, refreshData, toast, takeAdvance } = useApp();
   const now = useNow(1000);
   const [modal, setModal] = useState<{ open: boolean; kind: "quote" | "praise" | "late" | "early"; quote?: string; minutes?: number }>({ open: false, kind: "quote" });
   const [tab, setTab] = useState<"clock" | "stafftime" | "leave" | "history">("clock");
@@ -26,6 +26,8 @@ export function ClockTerminal({ targetStaffId }: { targetStaffId?: string }) {
   // Supervisor's selected staff member — when set, the Clock tab renders
   // the EXACT SAME clock terminal UI for that staff as they would see it.
   const [managedStaffId, setManagedStaffId] = useState<string | null>(targetStaffId ?? null);
+  const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [advanceAmt, setAdvanceAmt] = useState("");
 
   const activeStaffId = targetStaffId ?? managedStaffId ?? session?.staffId;
   const staff = activeStaffId ? staffById(activeStaffId) : undefined;
@@ -43,7 +45,7 @@ export function ClockTerminal({ targetStaffId }: { targetStaffId?: string }) {
   // "Rendered fewer hooks than expected" crashes in Supervisor mode.
   const todayDhaka = dhakaTodayKey();
   const isDonePreFlush = calc?.clockStatus === "completed";
-const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.startMin) : 0;
+const shiftStartMs = shift ? scheduledShiftBounds(new Date().toISOString(), shift).start : 0;
   const sessionCompletedBeforeShift = sess && isDonePreFlush && sess.timeOut
     ? new Date(sess.timeOut).getTime() < shiftStartMs
     : false;
@@ -54,7 +56,7 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
   // Single combined early return — placed AFTER every hook above has run,
   // so hook order/count never varies between renders.
   if (!staff || !shift || !calc || !flushedCalc) {
-    return <div className="flex min-h-screen items-center justify-center"><button onClick={logout} className="text-slate-500">Back to login</button></div>;
+    return <div className="flex min-h-screen items-center justify-center"><button onClick={logout} className="text-muted-foreground">Back to login</button></div>;
   }
 
   const isOnBreak = calc.clockStatus === "on-meal" || calc.clockStatus === "on-rest" || calc.clockStatus === "on-unpaid" || calc.clockStatus === "on-goout";
@@ -66,13 +68,13 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
   const isManaged = isSupervisor && (!!targetStaffId || !!managedStaffId);
   const isActive = isWorking || isOnBreak;
   const rawEarlyDeparture = sess && sess.date === todayDhaka
-? Math.round((scheduledBoundary(sess.timeIn, shift.endMin) - new Date(sess.timeOut ?? now).getTime()) / 60000)    : 0;
+    ? Math.round((scheduledShiftBounds(sess.timeIn, shift).end - new Date(sess.timeOut ?? now).getTime()) / 60000)    : 0;
   const shiftDurationMin = shift.endMin >= shift.startMin
     ? shift.endMin - shift.startMin
     : (24 * 60 - shift.startMin) + shift.endMin;
   const earlyDepartureMin = Math.max(0, Math.min(rawEarlyDeparture, shiftDurationMin));
   const nextShift = nextShiftAt(shift.startMin, now);
-  const nextShiftDay = new Date(nextShift).toLocaleDateString("en-US", { weekday: "long" });
+  const nextShiftDay = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Dhaka", weekday: "long" }).format(nextShift);
   const nextShiftTime = formatTime12(new Date(nextShift).toISOString());
 
   const withinShiftWindow = isWithinIndividualShiftWindow(new Date(now), shift, data.config);
@@ -133,41 +135,77 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
+    <div className={embedded ? "" : "min-h-screen bg-surface-muted"}>
+      {!embedded && (
+      <header className="flex items-center justify-between gap-3 border-b border-edge bg-surface px-4 py-3 sm:px-6">
         <div>
-          <p className="text-base font-extrabold tracking-tight text-slate-900 sm:text-lg">Khan Pharmacy</p>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-600">Trusted Care Since 1998</p>
+          <p className="text-base font-extrabold tracking-tight text-foreground sm:text-lg">Khan Pharmacy</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary ">Trusted Care Since 1998</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <p className="text-base font-bold tabular-nums leading-tight text-slate-900 sm:text-lg">{formatTime12(new Date(now).toISOString())}</p>
-            <p className="text-[11px] leading-tight text-slate-400">{formatLongDate(now)}</p>
+            <p className="text-base font-bold tabular-nums leading-tight text-foreground sm:text-lg">{formatTime12(new Date(now).toISOString())}</p>
+            <p className="text-[11px] leading-tight text-faint-foreground">{formatLongDate(now)}</p>
           </div>
-          {isManaged && <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-600 ring-1 ring-inset ring-indigo-200">Managed by {session?.name}</span>}
-          {isManaged && <button onClick={() => { setManagedStaffId(null); setTab("clock"); }} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-200"><Icon name="chevronLeft" size={15} /> My Clock</button>}
-          {isSupervisor && !isManaged && <button onClick={() => navigate("monitor")} className="hidden items-center gap-1.5 rounded-lg bg-indigo-50 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-100 sm:inline-flex"><Icon name="store" size={15} /> Floor</button>}
-          <button onClick={logout} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100"><Icon name="logout" size={16} /> Exit</button>
+          {isManaged && <span className="rounded-md bg-primary-soft px-2 py-0.5 text-[11px] font-bold text-primary ring-1 ring-inset ring-primary/25">Managed by {session?.name}</span>}
+          {isManaged && (
+            <button
+              onClick={() => {
+                if (onExit) {
+                  // Embedded inside the Attendance grid — collapse back to all staff.
+                  onExit();
+                } else if (targetStaffId) {
+                  navigate("attendance");
+                } else {
+                  setManagedStaffId(null);
+                  setTab("clock");
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-surface-muted px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-surface-muted"
+            >
+              <Icon name="chevronLeft" size={15} /> {targetStaffId ? "All Staff" : "My Clock"}
+            </button>
+          )}
+          {isSupervisor && !isManaged && <button onClick={() => navigate("monitor")} className="hidden items-center gap-1.5 rounded-lg bg-primary-soft px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary-soft sm:inline-flex"><Icon name="store" size={15} /> Floor</button>}
+          <button onClick={logout} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-surface-muted"><Icon name="logout" size={16} /> Exit</button>
         </div>
       </header>
+      )}
 
       <div className="mx-auto max-w-md px-4 py-6">
         <div className="flex items-center gap-4">
           <PhotoAvatar name={staff.fullName} photoUrl={staff.photoUrl} size={64} />
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-bold text-slate-900">{staff.fullName}</h1>
-            <p className="truncate text-sm text-slate-500">{staff.jobTitle}</p>
-            <p className="text-xs text-slate-400">{staff.section}{staff.counter ? ` · Counter ${staff.counter}` : ""} · {staff.employeeId}</p>
+            <h1 className="truncate text-xl font-bold text-foreground">{staff.fullName}</h1>
+            <p className="truncate text-sm text-muted-foreground">{staff.jobTitle}</p>
+            <p className="text-xs text-faint-foreground">{staff.section}{staff.counter ? ` · Counter ${staff.counter}` : ""} · {staff.employeeId}</p>
           </div>
         </div>
 
         <div className="mt-3 flex flex-col items-center gap-1.5">
-          <p className="flex items-center justify-center gap-1.5 text-sm font-bold text-slate-700">
-            <Icon name="clock" size={15} className="text-slate-700" />
+          <p className="flex items-center justify-center gap-1.5 text-sm font-bold text-foreground">
+            <Icon name="clock" size={15} className="text-foreground" />
             Shift {shift.startTime} – {shift.endTime}
           </p>
-          {/* "Managed by" badge intentionally shown only once, in the header above,
-              to avoid redundant duplication of the same information. */}
+          {/* Embedded terminals (from Staff grid or the Attendance hub) hide the
+              top header/branding/Exit; surface the managed identity here instead. */}
+          {isManaged && embedded && (
+            <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11px] font-semibold text-primary ring-1 ring-inset ring-primary/25">
+              <Icon name="shield" size={12} /> Managed by {session?.name}
+            </p>
+          )}
+          {/* Exactly one "Managed by" badge renders at any time: the top header
+              shows it when standalone, and this line-level badge only appears
+              when the header is suppressed (embedded terminals in the staff
+              grid / Attendance hub), so the identity is never duplicated. */}
+{isSupervisor && (
+          <button
+            onClick={() => { setAdvanceAmt(""); setAdvanceOpen(true); }}
+            className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200 hover:bg-amber-100"
+          >
+            <Icon name="handCoin" size={14} /> Give Advance
+          </button>
+        )}
         </div>
 
         {onLeave && (
@@ -178,12 +216,12 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
         )}
 
         {!onLeave && (
-          <div className={cn("mt-5 grid gap-1 rounded-xl bg-slate-100 p-1", isSupervisor ? "grid-cols-4" : "grid-cols-3")}>
+          <div className={cn("mt-5 grid gap-1 rounded-xl bg-surface-muted p-1", isSupervisor ? "grid-cols-4" : "grid-cols-3")}>
             {(isSupervisor
               ? ([["clock", "Clock"], ["stafftime", "Staff"], ["leave", "Leave"], ["history", "History"]] as const)
               : ([["clock", "Clock"], ["leave", "Leave"], ["history", "History"]] as const)
             ).map(([k, l]) => (
-              <button key={k} onClick={() => setTab(k)} className={cn("rounded-lg py-2 text-sm font-semibold transition", tab === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500")}>{l}</button>
+              <button key={k} onClick={() => setTab(k)} className={cn("rounded-lg py-2 text-sm font-semibold transition", tab === k ? "bg-surface text-foreground shadow-sm" : "text-muted-foreground")}>{l}</button>
             ))}
           </div>
         )}
@@ -202,7 +240,7 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
 
         {!onLeave && tab === "clock" && (
           <div key="clock" className="tab-panel transform-gpu will-change-transform">
-            <div className={cn("mt-5 overflow-hidden rounded-2xl shadow-lg", isDoneFlushed ? "bg-linear-to-br from-indigo-600 to-blue-700" : statusBg(flushedCalc.clockStatus))}>
+            <div className={cn("mt-5 overflow-hidden rounded-2xl shadow-lg", isDoneFlushed ? "bg-linear-to-br from-primary-deep to-blue-700" : statusBg(flushedCalc.clockStatus))}>
               <div className="p-6 text-center text-white">
                 {isOffFlushed ? (
                   beforeShift ? (
@@ -270,7 +308,7 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
 
             <div className="mt-4 space-y-3">
               {isOffFlushed && !beforeShift && !absent && canClockIn && <button disabled={clockActionBusy}
-                onClick={() => void doClockIn()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-4 text-lg font-bold text-white shadow-lg shadow-emerald-200 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"><Icon name="power" size={22} /> {clockActionBusy ? "Starting..." : "Clock In"}</button>}
+                onClick={() => void doClockIn()} className="flex w-full items-center justify-center gap-2 rounded-full bg-linear-to-r from-primary-deep to-primary-bright py-4 text-lg font-bold text-white shadow-lg shadow-primary/40 transition hover:from-primary hover:to-primary-bright active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"><Icon name="power" size={22} /> {clockActionBusy ? "Starting..." : "Clock In"}</button>}
               {flushedCalc.clockStatus === "working" && (
                 <>
                   <div className="grid grid-cols-3 gap-2.5">
@@ -279,10 +317,10 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
                     <button onClick={() => void withRefresh(() => startBreak(staff.employeeId, "unpaid"))} className="flex flex-col items-center gap-1 rounded-xl bg-rose-500 py-3.5 font-bold text-white shadow-md shadow-rose-200 transition hover:bg-rose-600 active:scale-[0.99]"><Icon name="pause" size={20} /> Unpaid<span className="text-[10px] font-normal opacity-90">deducted</span></button>
                   </div>
                   <button onClick={() => setGoOutOpen(true)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 py-3 font-bold text-white shadow-md shadow-violet-200 transition hover:bg-violet-600 active:scale-[0.99]"><Icon name="arrowRight" size={18} /> Paid Go-Out<span className="text-[11px] font-normal opacity-90">field work · no deduction</span></button>
-                  <button onClick={() => void withRefresh(() => toggleExtraTime(staff.employeeId))} className={cn("flex w-full items-center justify-between rounded-xl border-2 px-4 py-3 font-bold transition active:scale-[0.99]", flushedCalc.extraTimeActive ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50")}>
+                  <button onClick={() => void withRefresh(() => toggleExtraTime(staff.employeeId))} className={cn("flex w-full items-center justify-between rounded-xl border-2 px-4 py-3 font-bold transition active:scale-[0.99]", flushedCalc.extraTimeActive ? "border-primary bg-primary-soft text-primary" : "border-edge bg-surface text-muted-foreground hover:bg-surface-muted")}>
                     <span className="flex items-center gap-2"><Icon name="trendUp" size={18} /> Extra Time</span>
-                    <span className={cn("relative h-6 w-11 rounded-full transition", flushedCalc.extraTimeActive ? "bg-indigo-500" : "bg-slate-300")}>
-                      <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", flushedCalc.extraTimeActive ? "left-[22px]" : "left-0.5")} />
+                    <span className={cn("relative h-6 w-11 rounded-full transition", flushedCalc.extraTimeActive ? "bg-primary" : "bg-white/25")}>
+                      <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-all", flushedCalc.extraTimeActive ? "left-[22px]" : "left-0.5")} />
                     </span>
                   </button>
                 </>
@@ -306,8 +344,8 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
             </div>
 
             {flushedSess && (
-              <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Today's Summary</p>
+              <div className="mt-5 rounded-xl border border-edge bg-surface p-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Today's Summary</p>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <Stat icon="clock" label="Worked" value={formatDuration(flushedCalc.grossMin)} />
                   <Stat icon="meal" label="Meal + Rest" value={formatDuration(flushedCalc.breakMin)} />
@@ -318,13 +356,39 @@ const shiftStartMs = shift ? scheduledBoundary(new Date().toISOString(), shift.s
             )}
           </div>
         )}
+{advanceOpen && (
+        <Modal open onClose={() => setAdvanceOpen(false)} size="md" title="Give Advance" subtitle={staff.fullName} icon="handCoin"
+          footer={<>
+            <Button variant="ghost" onClick={() => setAdvanceOpen(false)}>Cancel</Button>
+            <Button variant="success" icon="check" disabled={!Number(advanceAmt)}
+              onClick={() => { takeAdvance(staff.employeeId, Number(advanceAmt)); setAdvanceOpen(false); }}>Log Advance</Button>
+          </>}>
+          <Field label="Advance Amount (৳)" hint="Automatically deducted from the next payout.">
+            <Input type="number" value={advanceAmt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAdvanceAmt(e.target.value)} placeholder="e.g. 500" />
+          </Field>
+          <p className="mt-3 text-center text-xs text-faint-foreground">
+            Current outstanding advance: ৳{(staff.advance ?? 0).toFixed(2)}
+          </p>
+        </Modal>
+      )}
 
         {!onLeave && tab === "leave" && (
           <div key="leave" className="tab-panel transform-gpu will-change-transform"><InlineLeave staffId={staff.employeeId} submitLeave={submitLeave} /></div>
         )}
 
         {!onLeave && tab === "history" && (
-          <div key="history" className="tab-panel transform-gpu will-change-transform"><CheckInHistory staffId={staff.employeeId} /></div>
+          <div key="history" className="tab-panel transform-gpu will-change-transform space-y-3">
+            <CheckInHistory staffId={staff.employeeId} />
+            {!isSupervisor && (
+              <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <Icon name="handCoin" size={18} className="mt-0.5 shrink-0 text-amber-600" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-800">Need an advance?</p>
+                  <p className="text-xs text-amber-600">Ask your supervisor any time — advances can be given while on duty, on break, before clocking out, or after.</p>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -389,35 +453,35 @@ function InlineLeave({ staffId, submitLeave }: { staffId: string; submitLeave: R
 
   return (
     <div className="mt-5 space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Leave Application</p>
+      <div className="rounded-xl border border-edge bg-surface p-4">
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Leave Application</p>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <select value={type} onChange={(e) => setType(e.target.value as LeaveType)} className="h-10 rounded-lg border border-slate-300 px-2 text-sm focus:border-emerald-500 focus:outline-none">
+            <select value={type} onChange={(e) => setType(e.target.value as LeaveType)} className="h-10 rounded-lg border border-edge px-2 text-sm focus:border-primary focus:outline-none">
               {["Annual", "Sick", "Casual", "Maternity", "Paternity", "Unpaid"].map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
-            {type === "Sick" && <input placeholder="Reason required" value={reason} onChange={(e) => setReason(e.target.value)} className="h-10 rounded-lg border border-slate-300 px-2 text-sm focus:border-emerald-500 focus:outline-none" />}
+            {type === "Sick" && <input placeholder="Reason required" value={reason} onChange={(e) => setReason(e.target.value)} className="h-10 rounded-lg border border-edge px-2 text-sm focus:border-primary focus:outline-none" />}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-10 rounded-lg border border-slate-300 px-2 text-sm focus:border-emerald-500 focus:outline-none" />
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-10 rounded-lg border border-slate-300 px-2 text-sm focus:border-emerald-500 focus:outline-none" />
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-10 rounded-lg border border-edge px-2 text-sm focus:border-primary focus:outline-none" />
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-10 rounded-lg border border-edge px-2 text-sm focus:border-primary focus:outline-none" />
           </div>
-          {type !== "Sick" && <textarea placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} className="w-full rounded-lg border border-slate-300 p-2 text-sm focus:border-emerald-500 focus:outline-none" />}
-          <button onClick={submit} className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-bold text-white hover:bg-emerald-700">{done ? "Submitted ✓" : "Submit Request"}</button>
+          {type !== "Sick" && <textarea placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} className="w-full rounded-lg border border-edge p-2 text-sm focus:border-primary focus:outline-none" />}
+          <button onClick={submit} className="w-full rounded-full bg-linear-to-r from-primary-deep to-primary-bright py-2.5 text-sm font-bold text-white hover:from-primary hover:to-primary-bright">{done ? "Submitted ✓" : "Submit Request"}</button>
         </div>
       </div>
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">My Recent Requests</p>
-        {mine.length === 0 ? <p className="text-sm text-slate-400">No requests yet.</p> : (
+      <div className="rounded-xl border border-edge bg-surface p-4">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint-foreground">My Recent Requests</p>
+        {mine.length === 0 ? <p className="text-sm text-faint-foreground">No requests yet.</p> : (
           <div className="space-y-1.5">
             {mine.map((r: LeaveRequest) => (
-              <div key={r.recordId} className="rounded-lg border border-slate-100 p-2.5 text-sm">
+              <div key={r.recordId} className="rounded-lg border border-edge p-2.5 text-sm">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-slate-600">{r.leaveType} · {r.fromDate}</span>
+                  <span className="text-muted-foreground">{r.leaveType} · {r.fromDate}</span>
                   <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold", r.status === "Approved" ? "bg-emerald-50 text-emerald-700" : r.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700")}>{r.status}</span>
                 </div>
                 {r.comment && (
-                  <div className="mt-2 rounded bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600">
+                  <div className="mt-2 rounded bg-surface-muted px-2.5 py-1.5 text-xs text-muted-foreground">
                     <span className="font-semibold">Reviewer note:</span> {r.comment}
                   </div>
                 )}
@@ -438,25 +502,26 @@ function CheckInHistory({ staffId }: { staffId: string }) {
 
   return (
     <div className="mt-5 space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Check-in Analytics</p>
+      <div className="rounded-xl border border-edge bg-surface p-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-faint-foreground">Check-in Analytics</p>
         <div className="mt-3 flex items-end gap-4">
           <p className="text-4xl font-bold tabular-nums text-emerald-600">{punctuality}%</p>
-          <p className="pb-1 text-sm text-slate-500">{onTime}/{sessions.length} on-time arrivals</p>
+          <p className="pb-1 text-sm text-muted-foreground">{onTime}/{sessions.length} on-time arrivals</p>
         </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-teal-500" style={{ width: `${punctuality}%` }} /></div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-muted"><div className="h-full rounded-full bg-linear-to-r from-emerald-500 to-emerald-400" style={{ width: `${punctuality}%` }} /></div>
       </div>
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent Check-ins</p>
-        {sessions.length === 0 ? <p className="text-sm text-slate-400">No history yet.</p> : (
+      <div className="rounded-xl border border-edge bg-surface p-4">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Recent Check-ins</p>
+        {sessions.length === 0 ? <p className="text-sm text-faint-foreground">No history yet.</p> : (
           <div className="space-y-1.5">
             {sessions.slice(0, 8).map((s: TimeSession) => {
               const c = computeSession(s, data.staff.find((e) => e.employeeId === staffId)!, data.config, s.timeOut ? new Date(s.timeOut).getTime() : Date.now());
               return (
-                <div key={s.id} className="flex items-center justify-between text-sm border-b border-slate-50 py-1.5 last:border-0">
-                  <span className="text-slate-600">{formatLongDate(s.date)}</span>
+                <div key={s.id} className="flex items-center justify-between text-sm border-b border-edge py-1.5 last:border-0">
+                  <span className="text-muted-foreground">{formatLongDate(s.date)}</span>
                   <span className="flex items-center gap-2">
-                    <span className="tabular-nums text-xs text-slate-400">{formatTime12(s.timeIn)}–{s.timeOut ? formatTime12(s.timeOut) : "…"}</span>
+                    <span className="tabular-nums text-xs text-faint-foreground">{formatTime12(s.timeIn)}–{s.timeOut ? formatTime12(s.timeOut) : "…"}</span>
+                    {!s.shiftStartMin && <span title="Recorded before shift snapshots existed — evaluated against the staff member's current shift" className="rounded bg-surface-muted px-1.5 py-px text-[10px] font-medium text-faint-foreground">legacy</span>}
                     {c.isLate ? <span className="rounded bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-700">+{formatDuration(c.lateMin)} late</span> : <span className="rounded bg-emerald-50 px-1.5 text-[11px] font-semibold text-emerald-700">On time</span>}
                   </span>
                 </div>
@@ -473,7 +538,7 @@ function statusBg(s: string) {
   if (s === "on-meal") return "bg-linear-to-br from-orange-500 to-orange-600";
   if (s === "on-rest") return "bg-linear-to-br from-sky-500 to-sky-600";
   if (s === "completed") return "bg-linear-to-br from-slate-600 to-slate-700";
-  return "bg-linear-to-br from-emerald-500 to-teal-600";
+  return "bg-linear-to-br from-emerald-500 to-emerald-600";
 }
 function statusLabel(s: string) {
   if (s === "on-meal") return "On Meal Break";
@@ -482,7 +547,7 @@ function statusLabel(s: string) {
   return "Clocked Out";
 }
 function Stat({ icon, label, value, tone = "slate" }: { icon: "clock" | "meal" | "alert" | "trendUp"; label: string; value: string; tone?: "slate" | "rose" | "emerald" }) {
-  const c = { slate: "bg-slate-100 text-slate-500", rose: "bg-rose-50 text-rose-500", emerald: "bg-emerald-50 text-emerald-600" }[tone];
-  const tc = { slate: "text-slate-800", rose: "text-rose-600", emerald: "text-emerald-600" }[tone];
-  return <div className="flex items-center gap-2"><span className={cn("flex h-8 w-8 items-center justify-center rounded-lg", c)}><Icon name={icon} size={15} /></span><div><p className="text-[11px] text-slate-400">{label}</p><p className={cn("font-semibold tabular-nums", tc)}>{value}</p></div></div>;
+  const c = { slate: "bg-surface-muted text-muted-foreground", rose: "bg-rose-50 text-rose-500", emerald: "bg-emerald-50 text-emerald-600" }[tone];
+  const tc = { slate: "text-foreground", rose: "text-rose-600", emerald: "text-emerald-600" }[tone];
+  return <div className="flex items-center gap-2"><span className={cn("flex h-8 w-8 items-center justify-center rounded-lg", c)}><Icon name={icon} size={15} /></span><div><p className="text-[11px] text-faint-foreground">{label}</p><p className={cn("font-semibold tabular-nums", tc)}>{value}</p></div></div>;
 }

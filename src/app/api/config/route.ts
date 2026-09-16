@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_CONFIG } from "@/lib/config";
 import { prisma } from "@/server/db";
 import { dbErrorResponse } from "@/lib/api-error";
+import { sessionFromRequest } from "@/lib/auth-session";
 
 export const runtime = "nodejs";
 
@@ -31,6 +32,7 @@ export async function GET() {
 const ConfigUpdate = z.object({ key: z.string().min(1), value: z.string() });
 
 export async function PUT(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = ConfigUpdate.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid config payload" }, { status: 400 });
   try {

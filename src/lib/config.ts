@@ -68,7 +68,7 @@ export function idFromSerial(serial: number): string {
 }
 
 // ============================================================================
-// Bangla Motivation Engine — pharmacy / service / patient-care themed.
+// Motivation Engine — pharmacy / service / patient-care themed.
 // ============================================================================
 
 export interface BanglaQuote { text: string; }
@@ -91,10 +91,10 @@ export const MOTIVATION_QUOTES: BanglaQuote[] = [
 ];
 
 export const PRAISE_MESSAGES: string[] = [
-  "শাবাশ! ঠিক সময়ে উপস্থিত হয়েছেন।",
-  "অসাধারণ! সময়নিষ্ঠতার জন্য ধন্যবাদ।",
-  "দুর্দান্ত! আদর্শ নিয়মানুবর্তিতা।",
-  "চমৎকার! সময়মতো উপস্থিত থাকার জন্য শুভেচ্ছা।",
+  "Great job! You arrived right on time today.",
+  "Excellent! Thank you for your punctuality.",
+  "Outstanding! A perfect example of discipline.",
+  "Wonderful! Nice work being on time today.",
 ];
 
 /** Random item, avoiding the previous one so it never repeats twice in a row. */

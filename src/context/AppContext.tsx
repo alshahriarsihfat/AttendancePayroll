@@ -10,10 +10,10 @@ import type {
 } from "../types";
 import { createSeedData } from "../lib/seed";
 import { can, type Permission } from "../lib/auth";
-import { computeSession, empShift, hourlyRateFor, scheduledBoundary, sessionFor, dhakaTodayKey } from "../lib/timeclock";
+import { computeSession, empShift, hourlyRateFor, scheduledShiftBounds, sessionFor, dhakaTodayKey, shiftForSession } from "../lib/timeclock";
 import { validateLeave, validateStaff, type FieldError } from "../lib/validation";
 import { uid } from "../lib/utils";
-import { formatDuration, isoDate, nowISO, workingDaysBetween } from "../lib/dates";
+import { formatDuration, nowISO, workingDaysBetween } from "../lib/dates";
 import { payRound } from "../lib/currency";
 import { configValue, SUPERVISOR_MAX } from "../lib/config";
 
@@ -60,17 +60,17 @@ interface AppContextValue {
   toggleExtraTime: (staffId: string) => void;
   startGoOut: (staffId: string, reason: string, estimatedMin: number) => void;
   endGoOut: (staffId: string) => void;
-  paySession: (sessionId: string) => Payment | null;
-  markArrears: (sessionId: string) => void;
-  clearAllDues: (staffId: string) => void;
+  /** Settle one or several unpaid days (clocked-out shifts only) in a single
+   *  transaction; returns the shared settlement batch id. */
+  paySessions: (sessionIds: string[]) => string | null;
+
+  /** Pay an arbitrary advance amount; reduces accumulated arrears first. */
   payCustomAdvance: (staffId: string, amount: number) => void;
   takeAdvance: (staffId: string, amount: number) => void;
   /** Completed shifts with no payment record yet (auto-registered dues). */
   unpaidShifts: { sessionId: string; staffId: string; date: string; netPay: number }[];
   /** True if any active session has no clock-out (blocks global payout). */
   anyOnDuty: boolean;
-  /** A supervisor is logged in but hasn't clocked in today yet. */
-  mustClockInFirst: boolean;
   // staff CRUD
   createStaff: (d: Partial<Employee>) => FormResult;
   updateStaff: (id: string, d: Partial<Employee>) => FormResult;
@@ -152,8 +152,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((payload: { session?: Session | null }) => {
         if (cancelled) return;
         setSession(payload.session ?? null);
-        if (payload?.session?.role === "SUPERVISOR") setView({ page: "terminal" });
         if (!payload.session) return null;
+        // Route supervisors straight to the Live Floor on every session restore
+        // (the login form hard-redirects and page refreshes reset view state, so
+        // the supervisor must be re-routed here — not only in loginEmployee).
+        setView({
+          page: payload.session.role === "SUPERVISOR" ? "monitor"
+            : payload.session.role === "ADMIN" ? "dashboard"
+            : "terminal",
+        });
         return fetch(STATE_ENDPOINT);
       })
       .then((response) => response?.ok ? response.json() : null)
@@ -216,8 +223,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const s = data.staff.find((e) => e.employeeId === staffId || e.username.toLowerCase() === staffId.toLowerCase());
     if (!s) { toast("Account found but record unreadable. Please reset demo data in Settings.", "error"); return; }
     setSession({ role: s.role === "SUPERVISOR" ? "SUPERVISOR" : "STAFF", staffId: s.employeeId, name: s.fullName, loginAt: nowISO() });
-    // Supervisors must clock in first → land on the clock terminal.
-    setView({ page: "terminal" });
+    // Supervisors land on the Live Floor; staff are routed to their clock terminal.
+    setView({ page: s.role === "SUPERVISOR" ? "monitor" : "terminal" });
     audit("LOGIN", "Session", s.employeeId, `${s.fullName} signed in as ${s.role}.`);
   }, [data.staff, audit, toast]);
   const logout = useCallback(() => {
@@ -253,9 +260,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clockIn = useCallback((staffId: string): ClockInEvent => {
     const emp = data.staff.find((e) => e.employeeId === staffId);
     if (todaySession(staffId)) { toast("Already clocked in today.", "info"); return { ok: false, lateMin: 0, isLate: false }; }
-    const s: TimeSession = { id: uid("SES"), staffId, date: dhakaTodayKey(), timeIn: nowISO(), timeOut: null, breaks: [], extraTime: [], goOuts: [], completed: false };
+    // Snapshot the shift that is active at clock-in so historical evaluation
+    // (lateness, overtime, early departure) is judged against THIS shift even
+    // after the staff member's shift is later edited.
+    const snapShift = emp ? empShift(emp) : null;
+    const s: TimeSession = {
+      id: uid("SES"), staffId, date: dhakaTodayKey(), timeIn: nowISO(), timeOut: null,
+      breaks: [], extraTime: [], goOuts: [], completed: false,
+      shiftStartMin: snapShift?.startMin, shiftEndMin: snapShift?.endMin,
+      shiftStartTime: emp?.shiftStart, shiftEndTime: emp?.shiftEnd,
+    };
     setData((d) => ({ ...d, sessions: [...d.sessions, s] }));
-    void postJson("/api/clock", { employeeId: staffId, action: "in" }).then(async (response) => {
+    void postJson("/api/clock", { employeeId: staffId, action: "in", timestamp: nowISO() }).then(async (response) => {
       if (!response.ok) {
         toast("Clock-in was not saved to the server.", "error");
         return;
@@ -268,11 +284,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }));
       }
     });
-    // late detection vs scheduled shift start
+    // late detection vs the shift's scheduled start (shift-aware for overnight)
     let lateMin = 0;
-    if (emp) {
-      const shift = empShift(emp);
-      const schedStart = scheduledBoundary(s.timeIn, shift.startMin);
+    if (emp && snapShift) {
+      const schedStart = scheduledShiftBounds(s.timeIn, snapShift).start;
       lateMin = new Date(s.timeIn).getTime() > schedStart ? Math.round((new Date(s.timeIn).getTime() - schedStart) / 60000) : 0;
     }
     const grace = Number(configValue(data.config, "LATE_GRACE_MINUTES", "10"));
@@ -292,7 +307,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let earlyDepartureMin = 0;
     if (emp) {
       const shift = empShift(emp);
-      const schedEnd = scheduledBoundary(s.timeIn, shift.endMin);
+      const schedEnd = scheduledShiftBounds(s.timeIn, shift).end;
       const outMs = new Date(outISO).getTime();
       if (outMs < schedEnd) {
         const raw = Math.round((schedEnd - outMs) / 60000);
@@ -309,8 +324,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Close any open go-out too — otherwise the staff stays "on go-out" forever.
       goOuts: (x.goOuts ?? []).map((g) => (g.end ? g : { ...g, end: outISO })),
     }));
-    void postJson("/api/clock", { employeeId: staffId, action: "out" }).then((response) => {
-      if (!response.ok) toast("Clock-out was not saved to the server.", "error");
+    void postJson("/api/clock", { employeeId: staffId, action: "out" }).then(async (response) => {
+      if (!response.ok) { toast("Clock-out was not saved to the server.", "error"); return; }
+      // Re-sync from the server so the client can never stay out of step with
+      // the DB (fixes: client shows "clocked out" while the server still sees
+      // the shift "on duty" — which used to block payout server-side).
+      try {
+        const res = await fetch(STATE_ENDPOINT, { cache: "no-store" });
+        if (res.ok) {
+          const payload = await res.json() as { data?: Dataset };
+          if (payload.data) setData(migrate(payload.data));
+        }
+      } catch { /* best-effort; local optimistic state remains */ }
     });
     const earlyStr = formatDuration(earlyDepartureMin);
     audit("CLOCK_OUT", "Session", staffId, `${emp?.fullName ?? staffId} clocked out${earlyDepartureMin ? ` (${earlyStr} early)` : ""}.`);
@@ -387,113 +412,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toast("Welcome back!", "success");
   }, [updateSession, audit, toast, staffById]);
 
-  const paySession = useCallback((sessionId: string): Payment | null => {
+  // ---------------------------------------------------------------------
+  // PAYMENTS â€” strictly DAY-WISE and CLOCK-OUT dependent.
+  //   â€¢ A shift is payable only after the staff member has clocked out.
+  //   â€¢ Each unpaid day keeps its OWN Payment row (date / hours / net).
+  //   â€¢ Multiple unpaid days can be settled together â€” ONE transaction,
+  //     shared batchId â€” and the payslip itemizes every date covered.
+  // ---------------------------------------------------------------------
+  const paySessions = useCallback((sessionIds: string[]): string | null => {
     if (!guard("pay.staff")) return null;
-    const sess = data.sessions.find((s) => s.id === sessionId);
-    const staff = sess ? staffById(sess.staffId) : undefined;
-    if (!sess || !staff) { toast("Session not found.", "error"); return null; }
-    // Prevent double-payment: if a payment already exists for this session, bail.
-    if (data.payments.some((p) => p.sessionId === sessionId)) { toast("Already paid.", "info"); return null; }
-    const finalised: TimeSession = {
-      ...sess, timeOut: sess.timeOut ?? nowISO(),
-      breaks: sess.breaks.map((b) => (b.end ? b : { ...b, end: nowISO() })),
-      extraTime: (sess.extraTime ?? []).map((b) => (b.end ? b : { ...b, end: nowISO() })),
-      goOuts: (sess.goOuts ?? []).map((g) => (g.end ? g : { ...g, end: nowISO() })),
-      completed: true,
-    };
-    const calc = computeSession(finalised, staff, data.config, new Date(finalised.timeOut!).getTime());
-    const shift = empShift(staff);
-    const rate = hourlyRateFor(staff, shift);
-    // paidAt = the exact moment cash left the till (never backdated to shift date).
-    const paidAt = nowISO();
-    // Auto-adjust: deduct any outstanding advance (অগ্রিম) from the final payable amount.
-    const outstandingAdvance = payRound(Math.min(staff.advance ?? 0, calc.netPay));
-    const finalPayable = payRound(calc.netPay - outstandingAdvance);
-    const payment: Payment = {
-      id: uid("PAY"), staffId: staff.employeeId, sessionId: sess.id,
-      date: dhakaTodayKey(), paidAt,
-      periodLabel: `${isoDate(today())} · Day`, dutyHours: payRound(shift.regularHours, 2),
-      workedMin: Math.round(calc.grossMin), breakMin: Math.round(calc.breakMin),
-      overBreakMin: Math.round(calc.overBreakMin), overtimeMin: Math.round(calc.overtimeMin),
-      // All money fields rounded once, at the single point of record creation.
-      overtimePay: payRound(calc.overtimePay), hourlyRate: payRound(rate), grossPay: payRound(calc.grossPay),
-      overBreakDeduction: payRound(calc.overBreakDeduction), netPay: finalPayable,
-      status: "Paid", paidBy: session?.name ?? "Admin",
-    };
-    void postJson("/api/payments", { sessionId, paidBy: session?.name ?? "Admin" }).then((response) => {
-      if (!response.ok) toast("Payment was not saved to the server.", "error");
+    const uniqueIds = [...new Set(sessionIds)];
+    if (uniqueIds.length === 0) return null;
+    // All selected days must already be clocked out â€” pay is locked otherwise.
+    const openSessions = uniqueIds
+      .map((id) => data.sessions.find((s) => s.id === id))
+      .filter((s) => !s?.timeOut);
+    if (openSessions.length > 0) {
+      toast("Pay is locked until the staff member clocks out.", "error");
+      return null;
+    }
+    const first = data.sessions.find((s) => s.id === uniqueIds[0]);
+    const staff = first ? staffById(first.staffId) : undefined;
+    if (!first || !staff) { toast("Session not found.", "error"); return null; }
+    const already = uniqueIds.filter((id) => data.payments.some((p) => p.sessionId === id));
+    if (already.length > 0) { toast("Already paid.", "info"); return null; }
+    if (uniqueIds.some((id) => data.sessions.find((s) => s.id === id)?.staffId !== staff.employeeId)) {
+      toast("A settlement can only cover one staff member's days.", "error");
+      return null;
+    }
+    const batchId = uid("BATCH");
+    // POST once â€” the server creates one Payment row per day atomically.
+    void postJson("/api/payments", { sessionIds: uniqueIds, paidBy: session?.name ?? "Admin" }).then(async (response) => {
+      if (!response.ok) { toast("Payment was not saved to the server.", "error"); return; }
+      // Adopt the server-authoritative records (amounts, advance adjustment,
+      // audit trail, batchId) so client state can never drift from the DB.
+      try {
+        const res = await fetch(STATE_ENDPOINT, { cache: "no-store" });
+        if (res.ok) {
+          const payload = await res.json() as { data?: Dataset };
+          if (payload.data) setData(migrate(payload.data));
+        }
+      } catch { /* best-effort; local optimistic records remain */ }
     });
-    setData((d) => {
-      const next = {
-        ...d,
-        sessions: d.sessions.map((s) => (s.id === sess.id ? finalised : s)),
-        payments: [payment, ...d.payments],
-        // Reduce the outstanding advance balance by the amount just adjusted out.
-        staff: d.staff.map((e) => (e.employeeId === staff.employeeId
-          ? { ...e, advance: payRound(Math.max(0, (e.advance ?? 0) - outstandingAdvance)) } : e)),
-      };
-      if (calc.overtimeMin > 0) {
-        next.overtimeLogs = [{
-          id: uid("OT"), staffId: staff.employeeId, date: dhakaTodayKey(),
-          shiftEnd: isoDate(new Date(scheduledBoundary(sess.timeIn, shift.endMin))), clockOut: finalised.timeOut!,
-          overtimeMin: Math.round(calc.overtimeMin), hourlyRate: payRound(rate), amount: calc.overtimePay,
-        }, ...d.overtimeLogs];
-      }
-      return next;
-    });
-    audit("PAYMENT", "Payment", payment.id, `Paid ৳${payRound(payment.netPay)} to ${staff.fullName}${calc.overtimeMin ? ` (+৳${calc.overtimePay} OT)` : ""}.`);
-    toast(`Paid ৳${payRound(payment.netPay).toFixed(2)} to ${staff.fullName}.`, "success");
-    return payment;
-  }, [guard, data.sessions, data.payments, data.config, staffById, session, audit, toast]);
-
-  /** Skip payment for a completed shift → accumulate as arrears (due) on the staff profile. */
-  const markArrears = useCallback((sessionId: string) => {
-    if (!guard("pay.staff")) return;
-    const sess = data.sessions.find((s) => s.id === sessionId);
-    const staff = sess ? staffById(sess.staffId) : undefined;
-    if (!sess || !staff || !sess.timeOut) { toast("Staff must clock out first.", "error"); return; }
-    if (data.payments.some((p) => p.sessionId === sessionId)) { toast("Already paid.", "info"); return; }
-    const calc = computeSession(sess, staff, data.config, new Date(sess.timeOut).getTime());
-    setData((d) => ({
-      ...d,
-      staff: d.staff.map((e) => (e.employeeId === staff.employeeId ? { ...e, arrears: (e.arrears ?? 0) + calc.netPay } : e)),
-      sessions: d.sessions.map((s) => (s.id === sessionId ? { ...s, completed: true } : s)),
-    }));
-    audit("ARREARS", "Payment", sessionId, `৳${payRound(calc.netPay).toFixed(2)} moved to arrears for ${staff.fullName}.`);
-    toast(`৳${payRound(calc.netPay).toFixed(2)} added to ${staff.fullName}'s arrears.`, "info");
-  }, [guard, data.sessions, data.payments, data.config, staffById, session, audit, toast]);
-
-  /** Settle every outstanding unpaid shift for one staff member in a single action. */
-  const clearAllDues = useCallback((staffId: string) => {
-    if (!guard("pay.staff")) return;
-    const staff = staffById(staffId);
-    if (!staff) { toast("Staff not found.", "error"); return; }
-    const paidIds = new Set(data.payments.map((p) => p.sessionId));
-    const dues = data.sessions.filter((s) => s.staffId === staffId && s.timeOut && !paidIds.has(s.id));
-    if (dues.length === 0 && (staff.arrears ?? 0) <= 0) { toast("No outstanding dues.", "info"); return; }
-    const paidAt = nowISO();
-    const newPayments: Payment[] = dues.map((sess) => {
-      const calc = computeSession(sess, staff, data.config, new Date(sess.timeOut!).getTime());
-      return {
-        id: uid("PAY"), staffId, sessionId: sess.id, date: dhakaTodayKey(), paidAt,
-        periodLabel: `${sess.date} · Day`, dutyHours: 0,
-        workedMin: Math.round(calc.grossMin), breakMin: Math.round(calc.breakMin),
-        overBreakMin: Math.round(calc.overBreakMin), overtimeMin: Math.round(calc.overtimeMin),
-        overtimePay: payRound(calc.overtimePay), hourlyRate: payRound(calc.hourlyRate),
-        grossPay: payRound(calc.grossPay), overBreakDeduction: payRound(calc.overBreakDeduction),
-        netPay: payRound(calc.netPay), status: "Paid", paidBy: session?.name ?? "Admin",
-      };
-    });
-    const total = newPayments.reduce((s, p) => s + p.netPay, 0) + (staff.arrears ?? 0);
-    setData((d) => ({
-      ...d,
-      payments: [...newPayments, ...d.payments],
-      staff: d.staff.map((e) => (e.employeeId === staffId ? { ...e, arrears: 0 } : e)),
-    }));
-    audit("CLEAR_DUES", "Payment", staffId, `Cleared all dues for ${staff.fullName} — ৳${payRound(total).toFixed(2)} (${newPayments.length} shifts + arrears).`);
-    toast(`Cleared ৳${payRound(total).toFixed(2)} in dues for ${staff.fullName}.`, "success");
-  }, [guard, data.sessions, data.payments, data.config, staffById, session, audit, toast]);
-
+    return batchId;
+  }, [guard, data.sessions, data.payments, data.staff, staffById, session, audit, toast]);
   /** Pay an arbitrary advance amount; reduces accumulated arrears first. */
   const payCustomAdvance = useCallback((staffId: string, amount: number) => {
     if (!guard("pay.staff")) return;
@@ -504,9 +466,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const paidAt = nowISO();
     const payment: Payment = {
       id: uid("ADV"), staffId, sessionId: "", date: dhakaTodayKey(), paidAt,
-      periodLabel: `${isoDate(today())} · Advance`, dutyHours: 0, workedMin: 0, breakMin: 0,
+      periodLabel: `${dhakaTodayKey()} · Advance`, dutyHours: 0, workedMin: 0, breakMin: 0,
       overBreakMin: 0, overtimeMin: 0, overtimePay: 0, hourlyRate: 0, grossPay: amt,
-      overBreakDeduction: 0, netPay: amt, status: "Paid", paidBy: session?.name ?? "Admin",
+      advanceAdjusted: 0, overBreakDeduction: 0, netPay: amt, status: "Paid", paidBy: session?.name ?? "Admin",
     };
     setData((d) => ({
       ...d,
@@ -572,7 +534,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const others = data.staff.filter((e) => e.employeeId !== id);
     const errors = validateStaff(
       { ...existing, ...d },
-      { existingIds: others.map((e) => e.employeeId), existingUsernames: others.map((e) => e.username.toLowerCase()), selfUsername: existing.username.toLowerCase() }
+      { existingIds: others.map((e) => e.employeeId), existingUsernames: others.map((e) => e.username.toLowerCase()), selfUsername: existing.username.toLowerCase(), isUpdate: true }
     );
     if (d.role === "SUPERVISOR" && existing.role !== "SUPERVISOR" && supervisorCount(id) >= SUPERVISOR_MAX) errors.push({ field: "role", message: `Maximum ${SUPERVISOR_MAX} supervisor accounts allowed.` });
     if (errors.length) return { ok: false, errors };
@@ -605,13 +567,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!guard("manage.staff")) return;
     const staff = data.staff.find((e) => e.employeeId === staffId);
     if (!staff) return;
+    const before = data.staff;
     const next = { ...staff, counter };
-    void postJson("/api/staff", next, "PUT").then((response) => {
-      if (!response.ok) toast("Counter assignment was not saved to the server.", "error");
-    });
+    // Optimistic local update so the roster grid feels instant…
     setData((st) => ({ ...st, staff: st.staff.map((e) => (e.employeeId === staffId ? next : e)) }));
-    audit("UPDATE", "Staff", staffId, `Counter set to ${counter ?? "none"}.`);
-    toast(`Counter ${counter ?? "cleared"}.`, "success");
+    // …but NO toast until the server confirms. Success = confirmed 2xx only;
+    // failure rolls the local state back so the roster card and the Counters
+    // page can never disagree about who owns a counter.
+    void postJson("/api/staff", { employeeId: staffId, counter }, "PUT").then((response) => {
+      if (!response.ok) {
+        setData((st) => ({ ...st, staff: before }));
+        toast("Counter assignment was not saved to the server.", "error");
+        return;
+      }
+      audit("UPDATE", "Staff", staffId, `Counter set to ${counter ?? "none"}.`);
+      toast(counter == null
+        ? `Cleared counter for ${staff.fullName}.`
+        : `Assigned ${staff.fullName} to Counter ${counter}.`, "success");
+    });
   }, [guard, data.staff, audit, toast]);
 
   // ---- leave ----
@@ -762,8 +735,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (s.timeOut || s.completed) continue;
         const emp = d.staff.find((e) => e.employeeId === s.staffId);
         if (!emp) continue;
-        const shift = empShift(emp);
-        const schedEnd = scheduledBoundary(s.timeIn, shift.endMin);
+        const shift = shiftForSession(emp, s);
+        const schedEnd = scheduledShiftBounds(s.timeIn, shift).end;
         if (now > schedEnd + autoMin * 60000) {
           const outISO = new Date(schedEnd + autoMin * 60000).toISOString();
           changed.push({
@@ -783,6 +756,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(interval);
   }, []);
 
+  // ---- live sync ---- Admin/Supervisor dashboards need to reflect leave requests
+  // (and other state) submitted from other sessions without a manual refresh.
+  // Poll the DB-backed state endpoint when on a managerial role.
+  const roleNow = session?.role;
+  useEffect(() => {
+    if (roleNow !== "ADMIN" && roleNow !== "SUPERVISOR") return;
+    const interval = window.setInterval(() => {
+      // Silent sync — do not surface "Refresh failed" toasts during background polls.
+      fetch(STATE_ENDPOINT, { cache: "no-store" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((payload: { data?: Dataset } | null) => {
+          if (payload?.data) setData(migrate(payload.data));
+        })
+        .catch(() => { /* keep current state on transient errors */ });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [roleNow]);
+
   // ---- derived global state ----
   // Completed shifts with no payment record → auto-registered as UNPAID dues.
   const unpaidShifts = useMemo(() => {
@@ -799,16 +790,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [data.sessions, data.payments, data.staff, data.config]);
 
-  const anyOnDuty = data.sessions.some((s) => s.completed === false && s.timeOut === null);
-  const mustClockInFirst = role === "SUPERVISOR" && !!session?.staffId && !todaySession(session.staffId);
+  const anyOnDuty = data.sessions.some((s) => s.completed === false && s.timeOut === null && s.date === dhakaTodayKey());
   const pendingApprovals = data.approvalRequests.filter((a) => a.status === "pending");
 
   const value: AppContextValue = {
     data, session, hydrated, role, view, toasts,
     loginAdmin, loginEmployee, logout, navigate, toast, dismissToast,
     canPerm, staffById, shiftById, todaySession, paymentFor, isOnLeaveToday,
-    clockIn, clockOut, startBreak, endBreak, toggleExtraTime, startGoOut, endGoOut, paySession, markArrears, clearAllDues, payCustomAdvance, takeAdvance, unpaidShifts,
-    anyOnDuty, mustClockInFirst, pendingApprovals, resolveApproval,
+    clockIn, clockOut, startBreak, endBreak, toggleExtraTime, startGoOut, endGoOut, paySessions,
+    payCustomAdvance, takeAdvance, unpaidShifts,
+    anyOnDuty, pendingApprovals, resolveApproval,
     createStaff, updateStaff, deactivateStaff, assignCounter,
     submitLeave, decideLeave, updateConfig, resetData, refreshData, exportData, importData,
   };

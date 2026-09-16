@@ -102,6 +102,16 @@ model TimeSession {
   completed      Boolean   @default(false)
   autoClockedOut Boolean   @default(false) // system closed it
 
+  // Shift snapshot captured at clock-in. Historical sessions are judged
+  // against THIS shift rather than the live Staff row, so editing an
+  // employee's shift never retroactively rewrites past attendance/pay.
+  // Legacy rows (before this column existed) have NULL; they are flagged in
+  // the UI so a migration decision can be made deliberately.
+  shiftStartMin  Int?
+  shiftEndMin    Int?
+  shiftStartTime String?
+  shiftEndTime   String?
+
   breaks    Json @default("[]")
   goOuts    Json @default("[]")
   extraTime Json @default("[]")
@@ -143,10 +153,15 @@ model Payment {
   status             PaymentStatus @default(PAID)
   paidBy             String // supervisor/admin name
   createdAt          DateTime      @default(now())
+  // Settlement batch id â€” groups multiple day-wise Payment rows settled as ONE
+  // transaction (e.g. three unpaid days paid together). NULL for pre-batch
+  // rows; the payslip itemizes every day that shares the same batchId.
+  batchId            String?
 
   @@index([staffId, paidAt])
   @@index([paidAt])
   @@index([status])
+  @@index([batchId])
 }
 
 // ---------------------------------------------------------------------------

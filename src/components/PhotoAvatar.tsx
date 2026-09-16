@@ -37,7 +37,7 @@ export function PhotoAvatar({
         width={size}
         height={size}
         onError={() => setOk(false)}
-        className={cn("shrink-0 rounded-full object-cover", ring && "ring-2 ring-white", className)}
+        className={cn("shrink-0 rounded-full object-cover", ring && "ring-2 ring-white dark:ring-surface", className)}
         style={{ width: size, height: size }}
         referrerPolicy="no-referrer"
       />

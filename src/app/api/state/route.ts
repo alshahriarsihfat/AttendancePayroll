@@ -4,6 +4,7 @@ import { dbErrorResponse } from "@/lib/api-error";
 import { dateKeyInZone } from "@/lib/dates";
 import { prisma } from "@/server/db";
 import { COOKIE_NAME, decodeSession } from "@/lib/auth-session";
+import { createSeedData } from "@/lib/seed";
 import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
@@ -14,6 +15,12 @@ type StatePayload = {
   data?: unknown;
   session?: unknown;
 };
+
+// Static reference collections (departments / shifts / holidays) are not DB
+// tables — they live only in the client-side snapshot. If that snapshot has not
+// been written yet (fresh DB), the merged response still needs them, otherwise
+// the client's migrate() aborts and silently falls back to synthetic demo data.
+const fallbackExtras = createSeedData();
 
 export async function GET() {
   const session = decodeSession((await cookies()).get(COOKIE_NAME)?.value);
@@ -54,9 +61,26 @@ export async function GET() {
     const visibleApprovals = isStaff ? approvalRows.filter((a) => a.staffId === myId) : approvalRows;
     const visibleAudit = isStaff ? auditRows.filter((l) => l.entityId === myId) : auditRows;
 
-    const data = snapshot && visibleStaff.length > 0
+    // "On-leave" is DERIVED from approved leave requests covering today, not
+    // from each browser's locally-patched staff.status, so the Attendance grid,
+    // Monitor, Dashboard and Staff Management all agree on the SAME staff
+    // member for every role/session (fixes Supervisor vs Admin mismatch).
+    const dhakaToday = dateKeyInZone(new Date());
+    const onLeaveTodayIds = new Set(
+      visibleLeave
+        .filter((r) => r.status === "Approved" && dateKeyInZone(r.fromDate) <= dhakaToday && dateKeyInZone(r.toDate) >= dhakaToday)
+        .map((r) => r.staffId)
+    );
+
+    const data = visibleStaff.length > 0
       ? {
-          ...snapshot,
+          // Static collections live in the snapshot; when it has not been written
+          // yet (fresh DB), backfill from the built-in sample lists so the merged
+          // dataset always has departments / shifts / holidays. All mutable state
+          // below comes from the DB — never from the stale snapshot.
+          departments: (snapshot as { departments?: unknown } | null)?.departments ?? fallbackExtras.departments,
+          shifts: (snapshot as { shifts?: unknown } | null)?.shifts ?? fallbackExtras.shifts,
+          holidays: (snapshot as { holidays?: unknown } | null)?.holidays ?? fallbackExtras.holidays,
           staff: visibleStaff.map((staff) => ({
             recordId: staff.id,
             employeeId: staff.employeeId,
@@ -82,7 +106,9 @@ export async function GET() {
             restMin: staff.restMin,
             shiftId: "SH-FULL",
             photoUrl: staff.photoUrl ?? "",
-            status: staff.status === "ON_LEAVE" ? "On-leave" : staff.status === "TERMINATED" ? "Terminated" : "Active",
+            status: staff.status === "TERMINATED"
+              ? "Terminated"
+              : onLeaveTodayIds.has(staff.employeeId) || staff.status === "ON_LEAVE" ? "On-leave" : "Active",
             isActive: staff.isActive,
             arrears: isStaff ? 0 : staff.arrears,
             advance: isStaff ? 0 : staff.advance,
@@ -114,6 +140,10 @@ export async function GET() {
             extraTime: s.extraTime as Prisma.InputJsonValue,
             completed: s.completed,
             autoClockedOut: s.autoClockedOut,
+            shiftStartMin: s.shiftStartMin ?? null,
+            shiftEndMin: s.shiftEndMin ?? null,
+            shiftStartTime: s.shiftStartTime ?? null,
+            shiftEndTime: s.shiftEndTime ?? null,
           })),
           payments: visiblePayments.map((p) => ({
             id: p.id,
@@ -134,6 +164,7 @@ export async function GET() {
             advanceAdjusted: p.advanceAdjusted,
             netPay: p.netPay,
             status: p.status,
+            batchId: p.batchId ?? undefined,
             paidBy: p.paidBy,
           })),
           overtimeLogs: visibleOvertime.map((o) => ({

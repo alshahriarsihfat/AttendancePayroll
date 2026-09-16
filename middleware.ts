@@ -19,26 +19,28 @@ const secret = () => {
   return s;
 };
 
+// ADMINS ONLY — staff records, counters, config (mirrors manage.staff/manage.config).
 const ADMIN_ONLY_PREFIXES = [
   "/api/staff",
+  "/api/config",
+];
+
+// ADMIN or SUPERVISOR — payments, advances & leave (mirrors pay.staff/manage.leave).
+const ELEVATED_PREFIXES = [
   "/api/payments",
   "/api/advance",
-  "/api/config",
   "/api/leave",
 ];
 
-const ADMIN_ONLY_MUTATIONS = [
+const ELEVATED_MUTATIONS = [
   "/api/state",
 ];
 
-function requiresElevatedRole(pathname: string, method: string): boolean {
-  if (ADMIN_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
-    return true;
-  }
-  if (ADMIN_ONLY_MUTATIONS.some((prefix) => pathname.startsWith(prefix)) && method !== "GET") {
-    return true;
-  }
-  return false;
+function requiredRole(pathname: string, method: string): "ADMIN" | "ELEVATED" | null {
+  if (ADMIN_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "ADMIN";
+  if (ELEVATED_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "ELEVATED";
+  if (ELEVATED_MUTATIONS.some((prefix) => pathname.startsWith(prefix)) && method !== "GET") return "ELEVATED";
+  return null;
 }
 
 async function validSession(value: string | undefined): Promise<{ role?: string } | null> {
@@ -81,8 +83,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (requiresElevatedRole(pathname, request.method)) {
-    if (session.role !== "ADMIN" && session.role !== "SUPERVISOR") {
+  const needed = requiredRole(pathname, request.method);
+  if (needed) {
+    if (needed === "ADMIN" && session.role !== "ADMIN") {
+      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
+    }
+    if (needed === "ELEVATED" && session.role !== "ADMIN" && session.role !== "SUPERVISOR") {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
   }

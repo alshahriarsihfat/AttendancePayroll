@@ -60,6 +60,8 @@ const P: Record<string, ReactNode> = {
   store: (<><path d="M3 9 4.5 4h15L21 9M4 9v11h16V9M4 9h16" /><path d="M9 20v-5h6v5" /></>),
   heart: <path d="M12 20s-7-4.35-9.5-9a5.5 5.5 0 0 1 9.5-5 5.5 5.5 0 0 1 9.5 5C19 15.65 12 20 12 20Z" />,
   candle: (<><path d="M12 3v2M12 13a4 4 0 0 0 0-8 4 4 0 0 0 0 8Z" /><path d="M9 13h6l-1 8H10l-1-8Z" /></>),
+  sun: (<><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4" /></>),
+  moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />,
 };
 
 export type IconName = keyof typeof P;

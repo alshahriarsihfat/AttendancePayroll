@@ -1,7 +1,72 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   KPSMS visual redesign tokens — class-based dark mode.
+   Primary accent = royal blue (replaces the old indigo/brand-teal accents).
+   Semantic colors (success/warning/danger/online) stay green/amber/rose/… and
+   are NEVER recolored to blue so status scannability is preserved.
+   ============================================================================ */
+
+/* Dark mode is driven by a `dark` class on <html> (toggled + persisted by the
+   ThemeToggle in the top-level nav/header). No prefers-color-scheme coupling
+   once the user has chosen explicitly. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* ---------- Fonts (unchanged) ---------- */
+  /* Bengali-capable fallbacks after the Latin fonts — the Bengali Taka sign
+     (U+09F3) is missing from "Inter"/"Segoe UI" on many systems, and without a
+     suitable fallback the browser substitutes a look-alike glyph (ৎ). */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Nirmala UI", "Noto Sans Bengali", "Hind Siliguri", "SolaimanLipi", "Kalpurush", "Bangla MN", sans-serif;
+
+  /* ---------- Brand color system — ROYAL BLUE ---------- */
+  /* Base, gradient stops and soft tint for primary actions / selected chips. */
+  --color-primary: #2563eb;           /* royal blue base */
+  --color-primary-deep: #1d4ed8;      /* deeper royal blue (gradient start) */
+  --color-primary-bright: #3b82f6;    /* brighter blue (gradient end) */
+  --color-primary-soft: #eaf0fe;      /* soft tint background (chips, subtle) */
+
+  /* ---------- Surfaces ---------- */
+  --color-surface: #ffffff;           /* cards */
+  --color-surface-muted: #f4f6fb;     /* subtle fills: input trails, hovers */
+  --color-page: #f1f4fc;              /* very light lavender-blue page bg */
+
+  /* ---------- Text hierarchy ---------- */
+  --color-foreground: #1b1f2a;        /* near-black primary text */
+  --color-muted-foreground: #5f6b7f;  /* secondary text */
+  --color-faint-foreground: #98a2b3;  /* tertiary/placeholder text */
+
+  /* ---------- Hairline borders (used sparingly — shadows carry the cards) -- */
+  --color-edge: #edf0f6;
+
+  /* ---------- Elevation: soft, diffused shadows ---------- */
+  --shadow-card: 0 2px 4px rgba(15, 23, 42, 0.03), 0 10px 30px -8px rgba(30, 64, 175, 0.10);
+  --shadow-card-lg: 0 4px 10px rgba(15, 23, 42, 0.04), 0 22px 50px -12px rgba(30, 64, 175, 0.16);
+}
+
+/* Light-mode default values for variables that flip in dark mode.
+   (Utilities reference var(--color-*) at runtime, so re-declaring them on the
+   .dark root is all that is required to re-skin the entire app.) */
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+  --color-primary: #5b8def;
+  --color-primary-deep: #3b82f6;
+  --color-primary-bright: #60a5fa;
+  --color-primary-soft: #1d2a49;
+  --color-surface: #151e33;
+  --color-surface-muted: #1b2642;
+  --color-page: #0b1220;
+  --color-foreground: #f2f4f8;
+  --color-muted-foreground: #a6b0c5;
+  --color-faint-foreground: #71809d;
+  --color-edge: rgba(163, 176, 203, 0.16);
+  --shadow-card: 0 2px 6px rgba(0, 0, 0, 0.30), 0 14px 34px -10px rgba(0, 0, 0, 0.45);
+  --shadow-card-lg: 0 4px 12px rgba(0, 0, 0, 0.35), 0 26px 60px -12px rgba(0, 0, 0, 0.55);
 }
 
 html,
@@ -12,10 +77,45 @@ body,
 
 body {
   font-family: var(--font-sans);
-  background-color: #f6f7fb;
-  color: #0f172a;
+  background-color: var(--color-page);
+  color: var(--color-foreground);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Thin, refined scrollbars (re-skin the light gray for dark mode) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c3cbd9 transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #c3cbd9;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dark * {
+  scrollbar-color: #33405f transparent;
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: #33405f;
+  background-clip: content-box;
+}
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: #46557a;
+  background-clip: content-box;
 }
 
 /* Thin, refined scrollbars */

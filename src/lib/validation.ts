@@ -16,14 +16,16 @@ export interface FieldError { field: string; message: string; }
 
 export function validateStaff(
   s: Partial<Employee>,
-  opts: { existingIds?: string[]; existingUsernames?: string[]; selfUsername?: string } = {}
+  opts: { existingIds?: string[]; existingUsernames?: string[]; selfUsername?: string; isUpdate?: boolean } = {}
 ): FieldError[] {
   const errors: FieldError[] = [];
   if (!s.fullName || !isNonEmpty(s.fullName)) errors.push({ field: "fullName", message: "Full name is required." });
   if (!s.employeeId || !isEmployeeId(s.employeeId || "")) errors.push({ field: "employeeId", message: "ID must be KP98 + 2 digits (e.g. KP9820)." });
-  // Manual credentials
+  // Manual credentials — username always required; password required on CREATE
+  // only. On edit a blank password means "keep the current password unchanged"
+  // so unrelated corrections (phone, shift, salary…) are never blocked.
   if (!s.username || !isNonEmpty(s.username)) errors.push({ field: "username", message: "Username is required." });
-  if (!s.password || !isNonEmpty(s.password)) errors.push({ field: "password", message: "Password is required." });
+  if (!opts.isUpdate && (!s.password || !isNonEmpty(s.password))) errors.push({ field: "password", message: "Password is required." });
   if (s.email && !isEmail(s.email)) errors.push({ field: "email", message: "Enter a valid email or leave blank." });
   if (!s.phone || !isPhone(s.phone || "")) errors.push({ field: "phone", message: "A valid phone is required." });
   if (!s.department) errors.push({ field: "department", message: "Department is required." });

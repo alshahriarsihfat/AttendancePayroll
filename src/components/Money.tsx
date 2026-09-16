@@ -19,8 +19,8 @@ export function Money({ value, compact, className, signed, muted }: MoneyProps) 
     <span
       className={cn(
         "tabular-nums font-semibold tracking-tight",
-        muted && "text-slate-400",
-        !muted && (isNeg ? "text-rose-600" : "text-slate-900"),
+        muted && "text-faint-foreground",
+        !muted && (isNeg ? "text-rose-600" : "text-foreground"),
         className
       )}
     >

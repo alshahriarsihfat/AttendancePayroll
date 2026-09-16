@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/server/db";
 import { hashPassword } from "@/lib/password";
 import { dbErrorResponse } from "@/lib/api-error";
+import { sessionFromRequest } from "@/lib/auth-session";
 
 export const runtime = "nodejs";
 
@@ -66,7 +67,49 @@ function staffData(input: z.infer<typeof StaffSchema>) {
   } satisfies Prisma.StaffCreateInput;
 }
 
+/** PUT is a PARTIAL update — absent fields keep their DB values. This is what
+ *  makes lightweight mutations (e.g. assigning a counter) work without sending
+ *  the entire record, and lets admin edits skip the password when unchanged. */
+const StaffUpdateSchema = StaffSchema.partial().extend({
+  employeeId: z.string().min(1),
+  password: z.string().optional(),
+});
+
+function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || key === "employeeId") continue;
+    switch (key) {
+      case "password":
+        // Empty → keep the existing hash; non-empty → re-hash the new secret.
+        if (typeof value === "string" && value.length > 0) data.password = hashPassword(value);
+        break;
+      case "salaryType":
+        data.salaryType = (value as string).toUpperCase();
+        break;
+      case "status":
+        data.status = value === "On-leave" ? "ON_LEAVE" : (value as string).toUpperCase();
+        break;
+      case "email":
+      case "phone":
+      case "photoUrl":
+        data[key] = (value as string) || null;
+        break;
+      case "joinDate":
+        data.joinDate = new Date(value as string);
+        break;
+      case "endDate":
+        data.endDate = value ? new Date(value as string) : null;
+        break;
+      default:
+        data[key] = value;
+    }
+  }
+  return data;
+}
+
 export async function POST(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = StaffSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
   try {
@@ -78,10 +121,14 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
-  const parsed = StaffSchema.safeParse(await request.json());
-  if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const parsed = StaffUpdateSchema.safeParse(await request.json());
+  if (!parsed.success) return Response.json({ error: "Invalid staff payload", details: parsed.error.flatten() }, { status: 400 });
   try {
-    const staff = await prisma.staff.update({ where: { employeeId: parsed.data.employeeId }, data: staffData(parsed.data) });
+    const staff = await prisma.staff.update({
+      where: { employeeId: parsed.data.employeeId! },
+      data: staffUpdateData(parsed.data),
+    });
     return Response.json(staff);
   } catch (error) {
     return dbErrorResponse(error);
@@ -89,6 +136,7 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const body = await request.json() as { employeeId?: string };
   if (!body.employeeId) return Response.json({ error: "employeeId is required" }, { status: 400 });
   try {

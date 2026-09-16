@@ -120,6 +120,60 @@ export function scheduledBoundary(timeInISO: string, boundaryMin: number): numbe
   return localDay.getTime() + (boundaryMin + dayOffset) * 60000;
 }
 
+/** True when a session carries its own shift snapshot captured at clock-in. */
+export function hasShiftSnapshot(session: TimeSession | undefined): boolean {
+  return !!session && Number.isInteger(session.shiftStartMin) && Number.isInteger(session.shiftEndMin);
+}
+
+/** The shift PARAMETERS to judge a specific session by. Prefers the snapshotted
+ *  shift recorded when the session was created (historical fidelity — a past
+ *  session stays judged against the shift that was active then, even after the
+ *  employee's shift is later edited). Falls back to the LIVE assignment only
+ *  for brand-new/in-progress sessions that have no snapshot yet. */
+export function shiftForSession(
+  staff: Pick<Employee, "shiftStart" | "shiftEnd" | "mealBreakMin" | "restMin">,
+  session: TimeSession | undefined
+): EmpShift {
+  const live = empShift(staff);
+  if (!hasShiftSnapshot(session)) return live;
+  const startMin = session!.shiftStartMin as number;
+  const endMin = session!.shiftEndMin as number;
+  let diff = endMin - startMin;
+  if (diff <= 0) diff += 24 * 60; // overnight wrap
+  return {
+    startMin, endMin, regularHours: payRound(diff / 60, 2),
+    mealBreakMin: live.mealBreakMin, restMin: live.restMin,
+    startTime: session!.shiftStartTime || live.startTime,
+    endTime: session!.shiftEndTime || live.endTime,
+  };
+}
+
+/** Shift-aware scheduled start/end (ms) for a clock-in instant.
+ *  For an overnight shift (endMin < startMin) the shift START belongs to the
+ *  PREVIOUS evening — a 3:22 AM clock-in on an 3PM–4AM shift must be judged
+ *  against yesterday's 3:00 PM start, never the same-day (future) 3 PM.
+ *  Replaces the single-boundary `scheduledBoundary()` guesses everywhere
+ *  sessions are evaluated (the old helper is kept for legacy server callers). */
+export function scheduledShiftBounds(
+  timeInISO: string,
+  shift: Pick<EmpShift, "startMin" | "endMin">
+): { start: number; end: number } {
+  const d = new Date(timeInISO);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const value = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+  const dhakaMidnight = (dayOffset: number) =>
+    new Date(`${value.year}-${value.month}-${value.day}T00:00:00+06:00`).getTime() + dayOffset * 24 * 60 * 60000;
+  const timeInMinutes = Number(value.hour) * 60 + Number(value.minute);
+  const { startMin, endMin } = shift;
+  const overnight = endMin < startMin;
+  if (!overnight) return { start: dhakaMidnight(0) + startMin * 60000, end: dhakaMidnight(0) + endMin * 60000 };
+  if (timeInMinutes <= endMin) return { start: dhakaMidnight(-1) + startMin * 60000, end: dhakaMidnight(0) + endMin * 60000 };
+  return { start: dhakaMidnight(0) + startMin * 60000, end: dhakaMidnight(1) + endMin * 60000 };
+}
+
 export interface BreakTotals {
   mealMin: number;
   restMin: number;
@@ -180,7 +234,10 @@ export function computeSession(
   config: ConfigEntry[],
   now: number
 ): SessionComputation {
-  const shift = empShift(staff);
+  // The shift used to judge this session: prefer the snapshot captured at
+  // clock-in (historical fidelity) over the employee's LIVE assignment, so a
+  // shift edit never retroactively rewrites past attendance/pay figures.
+  const shift = shiftForSession(staff, session);
   const mealAllow = staff.mealBreakMin || configNumber(config, "MEAL_BREAK_MINUTES", 30);
   const restAllow = staff.restMin || configNumber(config, "REST_BREAK_MINUTES", 15);
   const otMult = configNumber(config, "OVERTIME_MULTIPLIER", 1.25);
@@ -215,9 +272,11 @@ export function computeSession(
   const mealRemaining = Math.max(0, mealAllow - bt.mealMin);
   const restRemaining = Math.max(0, restAllow - bt.restMin - mealOver);
 
-  // Overtime calculation with safe guard against pre-shift overtime
-  const schedEnd = scheduledBoundary(session.timeIn, shift.endMin);
-  const schedStart = scheduledBoundary(session.timeIn, shift.startMin);
+  // Overtime calculation with safe guard against pre-shift overtime.
+  // Bounds are shift-aware (overnight shifts) and derived from the session's
+  // snapshotted shift so a past session is judged against the shift that was
+  // active at the time — never today's live assignment.
+  const { start: schedStart, end: schedEnd } = scheduledShiftBounds(session.timeIn, shift);
   const timeInMs = new Date(session.timeIn).getTime();
   
   const autoOvertimeMin = endMs > schedEnd && endMs > timeInMs ? Math.round((endMs - schedEnd) / 60000) : 0;

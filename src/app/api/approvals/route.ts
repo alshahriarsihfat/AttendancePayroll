@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { dbErrorResponse } from "@/lib/api-error";
+import { sessionFromRequest } from "@/lib/auth-session";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,7 @@ const CreateApproval = z.object({
 });
 
 export async function POST(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = CreateApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval payload" }, { status: 400 });
   try {
@@ -35,7 +37,7 @@ export async function POST(request: Request) {
         sessionId: parsed.data.sessionId,
         type: parsed.data.type,
         deltaMin: parsed.data.deltaMin,
-        date: new Date(`${parsed.data.date}T00:00:00`),
+        date: new Date(`${parsed.data.date}T00:00:00+06:00`),
         status: "pending",
       },
     });
@@ -53,6 +55,7 @@ const ResolveApproval = z.object({
 });
 
 export async function PATCH(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = ResolveApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval decision" }, { status: 400 });
   try {

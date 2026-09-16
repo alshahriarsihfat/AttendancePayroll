@@ -40,13 +40,13 @@ export function CodeBlock({ code, label }: { code: string; label?: string }) {
 
 export function Callout({ tone = "indigo", icon, title, children }: { tone?: "indigo" | "emerald" | "amber" | "rose"; icon?: ReactNode; title?: string; children: ReactNode }) {
   const c = {
-    indigo: "border-indigo-200 bg-indigo-50 text-indigo-800",
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    rose: "border-rose-200 bg-rose-50 text-rose-800",
+    indigo: "border-primary/20 bg-primary-soft text-primary dark:bg-primary-soft/70",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-400/25",
+    amber: "border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-400/25",
+    rose: "border-rose-200 bg-rose-50 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-400/25",
   }[tone];
   return (
-    <div className={cn("rounded-xl border p-4", c)}>
+    <div className={cn("rounded-2xl border p-4", c)}>
       {title && <p className="flex items-center gap-1.5 text-sm font-semibold">{icon}{title}</p>}
       <div className="mt-1 text-sm leading-relaxed opacity-90">{children}</div>
     </div>

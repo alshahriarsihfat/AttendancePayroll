@@ -15,12 +15,12 @@ export function Guide() {
     <div className="space-y-5 animate-fade">
       {/* Hero */}
       <Card className="overflow-hidden">
-        <div className="relative bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-900 p-6 text-white">
+        <div className="relative bg-linear-to-br from-primary-deep via-primary to-primary-bright p-6 text-white">
           <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl" />
           <div className="relative">
-            <p className="text-xs font-medium uppercase tracking-wider text-emerald-200">Setup &amp; Data Guide</p>
+            <p className="text-xs font-medium uppercase tracking-wider text-blue-100/90">Setup &amp; Data Guide</p>
             <h2 className="mt-1 text-2xl font-bold tracking-tight">Manage &amp; edit your data</h2>
-            <p className="mt-1.5 max-w-2xl text-sm text-emerald-100/80">
+            <p className="mt-1.5 max-w-2xl text-sm text-blue-50/85">
               Everything you need to edit records inside the app, back up your data, and keep it safe.
             </p>
           </div>
@@ -125,13 +125,13 @@ function AppDataGuide({ navigate }: { navigate: (p: "staff" | "settings" | "atte
         {steps.map((s, i) => (
           <Card key={i} className="p-5">
             <div className="flex items-start gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-primary-deep to-primary-bright text-white shadow-md shadow-primary/25">
                 <Icon name={s.icon} size={20} />
               </span>
               <div className="min-w-0 flex-1">
-                <span className="text-[11px] font-bold text-emerald-600">STEP {i + 1}</span>
-                <h3 className="mt-0.5 text-sm font-semibold text-slate-900">{s.title}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-slate-600">{s.body}</p>
+                <span className="text-[11px] font-bold text-primary">STEP {i + 1}</span>
+                <h3 className="mt-0.5 text-sm font-semibold text-foreground">{s.title}</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{s.body}</p>
                 {s.action && <div className="mt-3">{s.action}</div>}
               </div>
             </div>
@@ -140,7 +140,7 @@ function AppDataGuide({ navigate }: { navigate: (p: "staff" | "settings" | "atte
       </div>
 
       <Card className="p-5">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Icon name="list" size={16} className="text-slate-400" /> Data model</h3>
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground"><Icon name="list" size={16} className="text-faint-foreground" /> Data model</h3>
         <div className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
           {[
             ["Staff", "ID, name, dept, counter, shift, salary, login, arrears"],
@@ -150,9 +150,9 @@ function AppDataGuide({ navigate }: { navigate: (p: "staff" | "settings" | "atte
             ["Approvals", "Late / early-exit / break-overrun flags for managers"],
             ["Leave", "Requests, reviewer notes, balances per year"],
           ].map(([k, v]) => (
-            <div key={k} className="rounded-lg border border-slate-200 p-3">
-              <p className="font-semibold text-slate-800">{k}</p>
-              <p className="text-xs text-slate-500">{v}</p>
+            <div key={k} className="rounded-lg border border-edge p-3">
+              <p className="font-semibold text-foreground">{k}</p>
+              <p className="text-xs text-muted-foreground">{v}</p>
             </div>
           ))}
         </div>

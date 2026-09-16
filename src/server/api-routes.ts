@@ -8,10 +8,11 @@
 
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { prisma, payRound } from "./db";
 import { dbErrorResponse } from "@/lib/api-error";
 import { dateKeyInZone, minutesBetween } from "@/lib/dates";
-import { scheduledBoundary } from "@/lib/timeclock";
+import { scheduledShiftBounds } from "@/lib/timeclock";
 import { sessionFromRequest, type AuthSession } from "@/lib/auth-session";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,9 @@ const ClockSchema = z.object({
   employeeId: z.string().min(1).optional(),
   staffId: z.string().min(1).optional(),
   action: z.enum(["in", "out", "break_start", "break_end", "goout_start", "goout_end"]),
+  // Client-side event timestamp. The server still uses its own authoritative
+  // clock for the record — this field exists so both sides log the same action.
+  timestamp: z.string().optional(),
   breakType: z.enum(["meal", "rest", "unpaid"]).optional(),
   goOutReason: z.string().optional(),
   goOutEstimatedMin: z.number().int().positive().optional(),
@@ -50,8 +54,10 @@ export async function POST_clock(req: Request) {
   const now = new Date();
   const todayKey = dhakaDateKey(now);
   const today = dhakaStart(todayKey);
-  const config = await loadConfig();
   try {
+    // Loaded inside the try so a config/DB failure is caught by dbErrorResponse
+    // below and returned as a descriptive message — never an unhandled 500.
+    const config = await loadConfig();
     const staff = await prisma.staff.findUnique({ where: { employeeId } });
     if (!staff || !staff.isActive) {
       return Response.json({ error: "Staff not found or inactive" }, { status: 404 });
@@ -111,6 +117,8 @@ export async function POST_clock(req: Request) {
               breaks: [],
               goOuts: [],
               extraTime: [],
+              // Re-opened sessions re-capture the shift that is active NOW.
+              ...staffShiftSnapshot(staff),
             },
           });
           await tx.auditLog.create({
@@ -138,8 +146,11 @@ export async function POST_clock(req: Request) {
           where: { staffId: employeeId, timeOut: null, date: { lt: today } },
         });
         for (const open of openSessions) {
-          const [endHour, endMinute] = parseShiftTime(staff.shiftEnd);
-          const autoOut = dhakaAt(dhakaDateKey(open.date), endHour * 60 + endMinute);
+          // Judge the forgotten session against ITS OWN snapshotted shift end
+          // (fall back to the live assignment for pre-snapshot legacy rows) so
+          // a shift edit never retroactively rewrites when an old shift closed.
+          const { endMin } = sessionShiftProps(staff, open);
+          const autoOut = dhakaAt(dhakaDateKey(open.date), endMin);
           await tx.timeSession.update({
             where: { id: open.id },
             data: { timeOut: autoOut, completed: true, autoClockedOut: true },
@@ -149,7 +160,14 @@ export async function POST_clock(req: Request) {
         const [hh, mm] = parseShiftTime(staff.shiftStart);
         const shiftStart = dhakaAt(todayKey, hh * 60 + mm);
         const lateMin = now > shiftStart ? Math.round((now.getTime() - shiftStart.getTime()) / 60000) : 0;
-        const session = await tx.timeSession.create({ data: { staffId: employeeId, date: today, timeIn: now } });
+        const session = await tx.timeSession.create({
+          data: {
+            staffId: employeeId, date: today, timeIn: now,
+            // Capture the shift that was active at clock-in so future edits to
+            // the staff row cannot rewrite how this session is evaluated.
+            ...staffShiftSnapshot(staff),
+          },
+        });
         await tx.auditLog.create({
           data: {
             action: "CLOCK_IN", entityType: "TimeSession", entityId: session.id,
@@ -226,9 +244,8 @@ export async function POST_clock(req: Request) {
     // ---- CLOCK OUT (closes ALL open segments) ----
     if (action === "out") {
       const outISO = now.toISOString();
-      // Early-departure detection
-      const [eh, em] = parseShiftTime(staff.shiftEnd);
-      const shiftEnd = new Date(scheduledBoundary(session.timeIn.toISOString(), eh * 60 + em));
+      // Early-departure detection against the SESSION's snapshotted shift end.
+      const shiftEnd = new Date(scheduledShiftBounds(session.timeIn.toISOString(), sessionShiftProps(staff, session)).end);
       const earlyMin = now < shiftEnd ? Math.round((shiftEnd.getTime() - now.getTime()) / 60000) : 0;
 
       const closed = {
@@ -267,142 +284,249 @@ export async function POST_clock(req: Request) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/payments — Process a payout with automatic advance adjustment.
-// Runs in a TRANSACTION: Payment + AdvanceLog + Staff.advance all update
-// together or not at all.
+// POST /api/payments â€” Settle ONE or MULTIPLE unpaid days for a staff member.
+//
+// Strictly day-wise & clock-out dependent:
+//   â€¢ Each day (session) is paid with its OWN Payment row â€” never lumped.
+//   â€¢ Payment is LOCKED until every selected shift has clocked out.
+//   â€¢ Selecting several unpaid days settles them in ONE atomic transaction
+//     (shared batchId); the receipt/payslip itemizes every date covered.
+// Runs in a TRANSACTION: Payment rows + OvertimeLogs + AdvanceLog + Staff.advance.
 // ---------------------------------------------------------------------------
 const PaySchema = z.object({
-  sessionId: z.string().min(1),
+  // One settlement transaction covers one or more day-wise (per-shift) rows.
+  sessionIds: z.array(z.string().min(1)).min(1),
+  // Legacy single-session payload ({ sessionId }) is coerced into the batch.
+  sessionId: z.string().min(1).optional(),
   paidBy: z.string().min(1),
 });
 
-/** Thrown when a payment for this session already exists (checked inside the
- *  transaction so concurrent requests can't both create a duplicate). */
+/** Thrown when any session in a settlement already has a payment record
+ *  (checked inside the transaction so concurrent requests can't both create
+ *  duplicates). */
 class PaymentAlreadyPaidError extends Error {}
 
+type PayoutSessionRow = {
+  date: Date;
+  timeIn: Date;
+  timeOut: Date | null;
+  breaks: Prisma.JsonValue;
+  goOuts: Prisma.JsonValue;
+  extraTime: Prisma.JsonValue;
+  shiftStartMin?: number | null;
+  shiftEndMin?: number | null;
+};
+
+/**
+ * Compute ONE day's payout from its clocked-out session â€” the single
+ * authoritative wage calculation on the server (mirrors the frontend
+ * computeSession() so both layers agree). Clock-out dependent by design:
+ * a session without a timeOut cannot be paid (enforced by the caller).
+ */
+function computeSessionPayout(
+  session: PayoutSessionRow,
+  staff: { shiftStart: string; shiftEnd: string; salaryType: string; hourlyRate: number; dailyRate: number; baseSalary: number; mealBreakMin: number; restMin: number },
+  config: Record<string, string>
+) {
+  if (!session.timeOut) throw new Error("PAYMENT_LOCKED_BEFORE_CLOCK_OUT");
+  const out = session.timeOut;
+  const outISO = out.toISOString();
+  const shiftHours = payRound(parseShiftHours(staff.shiftStart, staff.shiftEnd));
+  const hourlyRate = payRound(getHourlyRate(staff, shiftHours));
+
+  const workedMin = payRound(Math.max(0, (out.getTime() - session.timeIn.getTime()) / 60000), 4);
+  const breaks: Segment[] = JSON.parse(JSON.stringify(session.breaks ?? "[]"));
+  const extraTime = (session.extraTime ?? []) as Array<{ start: string; end: string | null }>;
+
+  // Dual-pool break engine: 30m meal + 15m rest = 45m paid ceiling
+  let mealMin = 0, restMin = 0, unpaidMin = 0;
+  for (const b of breaks) {
+    const end = b.end ? new Date(b.end).getTime() : out.getTime();
+    const mins = (end - new Date(b.start).getTime()) / 60000;
+    if (b.type === "meal") mealMin += mins;
+    else if (b.type === "rest") restMin += mins;
+    else unpaidMin += mins;
+  }
+  const paidAllow = configNumber(config, "MEAL_BREAK_MINUTES", staff.mealBreakMin) + configNumber(config, "REST_BREAK_MINUTES", staff.restMin);
+  const paidTaken = mealMin + restMin;
+  const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
+
+  // Overtime: minutes past the scheduled shift end, judged against the
+  // SESSION's snapshotted shift for historical fidelity.
+  const shiftEndMs = scheduledShiftBounds(session.timeIn.toISOString(), sessionShiftProps(staff, session)).end;
+  const overtimeMin = out.getTime() > shiftEndMs ? Math.round((out.getTime() - shiftEndMs) / 60000) : 0;
+  const extraTimeMin = extraTime.reduce((sum: number, et) => {
+    const endISO = et.end ?? outISO;
+    return sum + minutesBetween(et.start, endISO);
+  }, 0);
+
+  // ---- Money (single rounding point) ----
+  const totalOvertimeMin = overtimeMin + extraTimeMin;
+  const basicMin = Math.max(0, workedMin - totalOvertimeMin);
+  const grossPay = payRound(hourlyRate * (basicMin / 60));
+  const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
+  const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (totalOvertimeMin / 60));
+  const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
+
+  return {
+    dutyHours: shiftHours,
+    workedMin: Math.round(workedMin),
+    breakMin: Math.round(mealMin + restMin),
+    overBreakMin: Math.round(overBreakMin),
+    overtimeMin: Math.max(0, totalOvertimeMin),
+    hourlyRate,
+    grossPay,
+    overtimePay,
+    overBreakDeduction,
+    netEarned,
+  };
+}
 export async function POST_payment(req: Request) {
-  const body = PaySchema.safeParse(await req.json());
-  if (!body.success) return Response.json({ error: "Invalid payload" }, { status: 400 });
+  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
+
+  let raw: unknown;
+  try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
+  const body = PaySchema.safeParse(raw);
+  if (!body.success) return Response.json({ error: "Invalid payload", details: body.error.flatten() }, { status: 400 });
+
+  const sessionIds = body.data.sessionIds ?? (body.data.sessionId ? [body.data.sessionId] : []);
+  const paidBy = body.data.paidBy;
 
   try {
-    const session = await prisma.timeSession.findUnique({
-      where: { id: body.data.sessionId },
+    const sessions = await prisma.timeSession.findMany({
+      where: { id: { in: sessionIds } },
       include: { staff: true },
     });
-    if (!session?.timeOut) return Response.json({ error: "Staff must clock out first" }, { status: 409 });
-
-    // ---- Wage calculation (mirrors frontend computeSession) ----
-    const staff = session.staff;
-    const config = await loadConfig();
-    const shiftHours = payRound(parseShiftHours(staff.shiftStart, staff.shiftEnd));
-    const hourlyRate = payRound(getHourlyRate(staff, shiftHours));
-
-    const workedMin = payRound(Math.max(0, (session.timeOut.getTime() - session.timeIn.getTime()) / 60000), 4);
-    const breaks: Segment[] = JSON.parse(JSON.stringify(session.breaks ?? "[]"));
-    const goOuts: GoOut[] = JSON.parse(JSON.stringify(session.goOuts ?? "[]"));
-
-    // Dual-pool break engine: 30m meal + 15m rest = 45m paid ceiling
-    let mealMin = 0, restMin = 0, unpaidMin = 0;
-    for (const b of breaks) {
-      const end = b.end ? new Date(b.end).getTime() : session.timeOut!.getTime();
-      const mins = (end - new Date(b.start).getTime()) / 60000;
-      if (b.type === "meal") mealMin += mins;
-      else if (b.type === "rest") restMin += mins;
-      else unpaidMin += mins;
+    if (sessions.length !== sessionIds.length) {
+      return Response.json({ error: "One or more selected shifts were not found" }, { status: 404 });
     }
-    const paidAllow = configNumber(config, "MEAL_BREAK_MINUTES", staff.mealBreakMin) + configNumber(config, "REST_BREAK_MINUTES", staff.restMin);
-    const paidTaken = mealMin + restMin;
-    const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
 
-    // Overtime: minutes past scheduled shift end
-    const shiftEndMs = scheduledBoundary(session.timeIn.toISOString(), parseShiftTime(staff.shiftEnd)[0] * 60 + parseShiftTime(staff.shiftEnd)[1]);
-    const overtimeMin = session.timeOut.getTime() > shiftEndMs
-      ? Math.round((session.timeOut.getTime() - shiftEndMs) / 60000) : 0;
-    const extraTimeMin = ((session.extraTime ?? []) as Array<{ start: string; end: string | null }>).reduce((sum: number, et) => {
-      const endISO = et.end ?? session.timeOut!.toISOString();
-      return sum + minutesBetween(et.start, endISO);
-    }, 0);
+    // ---- CLOCK-OUT LOCK: no payment before a shift is completed ----
+    const openDays = sessions.filter((s) => !s.timeOut);
+    if (openDays.length > 0) {
+      return Response.json({
+        error: "Pay is locked until the staff member clocks out",
+        details: `Shift(s) still on duty: ${openDays.map((s) => dateKeyInZone(s.date)).join(", ")}. Clock out first.`,
+      }, { status: 409 });
+    }
 
-    // ---- Money (single rounding point) ----
-    const totalOvertimeMin = overtimeMin + extraTimeMin;
-    const basicMin = Math.max(0, workedMin - totalOvertimeMin);
-    const grossPay = payRound(hourlyRate * (basicMin / 60));
-    const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
-    const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (totalOvertimeMin / 60));
-    const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
+    // ---- a settlement covers exactly one staff member's days ----
+    const staff = sessions[0].staff;
+    if (sessions.some((s) => s.staffId !== staff.employeeId)) {
+      return Response.json({ error: "A settlement can only cover one staff member's days" }, { status: 400 });
+    }
 
-    // ---- AUTO ADVANCE ADJUSTMENT ----
-    const advanceAdjusted = payRound(Math.min(Math.max(0, staff.advance), netEarned));
-    const netPay = payRound(Math.max(0, netEarned - advanceAdjusted));
+    const config = await loadConfig();
 
-    // ---- ATOMIC TRANSACTION ----
-    // Duplicate-payment guard runs INSIDE the transaction. Paired with the
-    // `@unique` constraint on Payment.sessionId, this closes the race where two
-    // concurrent requests could both pass a check made outside the transaction
-    // and create two payments for the same shift.
-    const payment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const alreadyPaid = await tx.payment.findFirst({ where: { sessionId: session.id } });
-      if (alreadyPaid) throw new PaymentAlreadyPaidError();
+    // ---- day-wise wage computation (oldest day first so the slip reads naturally) ----
+    const days = sessions
+      .slice()
+      .sort((a, b) => a.date.getTime() - b.date.getTime())
+      .map((s) => ({
+        session: s,
+        calc: computeSessionPayout(s, staff, config),
+        periodLabel: `${dateKeyInZone(s.date)} · Day`,
+      }));
 
-      const p = await tx.payment.create({
-        data: {
-          staffId: staff.employeeId, sessionId: session.id,
-          date: session.date, paidAt: new Date(),          // exact cash-flow time
-          // Resolve the SHIFT's calendar date in Dhaka time — session.date is
-          // stored as Dhaka midnight, and toISOString().slice(0,10) returns the
-          // UTC date which lands on the previous day between 18:00–24:00 UTC.
-          periodLabel: `${dateKeyInZone(session.date)} · Day`,
-          dutyHours: payRound(shiftHours), workedMin: Math.round(workedMin),
-          breakMin: Math.round(mealMin + restMin), overBreakMin: Math.round(overBreakMin),
-          overtimeMin: Math.max(0, totalOvertimeMin), hourlyRate: payRound(hourlyRate), grossPay: payRound(grossPay),
-          overtimePay: payRound(overtimePay), overBreakDeduction: payRound(overBreakDeduction),
-          advanceAdjusted, netPay,
-          status: "PAID", paidBy: body.data.paidBy,
-        },
-      });
+    const totalNet = payRound(days.reduce((sum, d) => sum + d.calc.netEarned, 0));
 
-      if (advanceAdjusted > 0) {
+    // ---- AUTO ADVANCE ADJUSTMENT, spread across the days proportionally ----
+    // The advance is attributed per-day (balanced rounding) so every Payment
+    // row stays internally consistent: netPay = netEarned - advanceAdjusted.
+    const deduction = payRound(Math.min(Math.max(0, staff.advance), totalNet));
+    let remainder = deduction;
+    const rows = days.map((d, i) => {
+      const isLast = i === days.length - 1;
+      let share = isLast
+        ? remainder
+        : totalNet > 0 ? payRound((d.calc.netEarned * deduction) / totalNet) : 0;
+      share = Math.max(0, Math.min(share, d.calc.netEarned));
+      remainder = payRound(remainder - share);
+      return {
+        ...d,
+        advanceAdjusted: payRound(share),
+        netPay: payRound(Math.max(0, d.calc.netEarned - share)),
+      };
+    });
+// ---- ATOMIC TRANSACTION ----
+    // Duplicate-payment guards run INSIDE the transaction; paired with the
+    // `@unique` constraint on Payment.sessionId, concurrent double-payments
+    // for the same day are impossible.
+    const batchId = randomUUID();
+    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const paymentRows: Array<{ id: string; advanceAdjusted: number; netPay: number }> = [];
+      for (const row of rows) {
+        const alreadyPaid = await tx.payment.findFirst({ where: { sessionId: row.session.id } });
+        if (alreadyPaid) throw new PaymentAlreadyPaidError();
+        const p = await tx.payment.create({
+          data: {
+            staffId: staff.employeeId, sessionId: row.session.id,
+            date: row.session.date, paidAt: new Date(),          // exact cash-flow time
+            periodLabel: row.periodLabel,
+            dutyHours: row.calc.dutyHours, workedMin: row.calc.workedMin,
+            breakMin: row.calc.breakMin, overBreakMin: row.calc.overBreakMin,
+            overtimeMin: row.calc.overtimeMin, hourlyRate: row.calc.hourlyRate,
+            grossPay: row.calc.grossPay, overtimePay: row.calc.overtimePay,
+            overBreakDeduction: row.calc.overBreakDeduction,
+            advanceAdjusted: row.advanceAdjusted, netPay: row.netPay,
+            status: "PAID", paidBy, batchId,
+          },
+        });
+        paymentRows.push({ id: p.id, advanceAdjusted: p.advanceAdjusted, netPay: p.netPay });
+        if (row.calc.overtimeMin > 0) {
+          await tx.overtimeLog.create({
+            data: {
+              staffId: staff.employeeId, date: row.session.date,
+              overtimeMin: row.calc.overtimeMin, hourlyRate: row.calc.hourlyRate,
+              amount: row.calc.overtimePay,
+            },
+          });
+        }
+      }
+
+      const totalAdjusted = payRound(paymentRows.reduce((s, p) => s + p.advanceAdjusted, 0));
+      if (totalAdjusted > 0) {
         await tx.advanceLog.create({
           data: {
-            staffId: staff.employeeId, type: "ADJUSTED", amount: advanceAdjusted,
-            balanceAfter: payRound(staff.advance - advanceAdjusted),
-            paymentId: p.id, note: "Auto-adjusted from payout",
-            createdBy: body.data.paidBy,
+            staffId: staff.employeeId, type: "ADJUSTED", amount: totalAdjusted,
+            balanceAfter: payRound(staff.advance - totalAdjusted),
+            paymentId: paymentRows[0].id, note: "Auto-adjusted from payout",
+            createdBy: paidBy,
           },
         });
         await tx.staff.update({
           where: { employeeId: staff.employeeId },
-          data: { advance: payRound(staff.advance - advanceAdjusted) },
+          data: { advance: payRound(Math.max(0, staff.advance - totalAdjusted)) },
         });
       }
 
+      const netTotal = payRound(paymentRows.reduce((s, p) => s + p.netPay, 0));
+      const dateList = rows.map((r) => dateKeyInZone(r.session.date)).join(", ");
       await tx.auditLog.create({
         data: {
-          action: "PAYMENT", entityType: "Payment", entityId: p.id,
-          actorName: body.data.paidBy, actorRole: "SUPERVISOR",
-          summary: `Paid ৳${netPay.toFixed(2)} to ${staff.fullName}` +
-                   (advanceAdjusted > 0 ? ` (advance adjusted ৳${advanceAdjusted.toFixed(2)})` : ""),
+          action: "PAYMENT", entityType: "Payment", entityId: paymentRows[0].id,
+          actorName: paidBy, actorRole: "SUPERVISOR",
+          summary: `Paid à§³${netTotal.toFixed(2)} to ${staff.fullName} (${rows.length} day${rows.length > 1 ? "s" : ""}: ${dateList})` +
+                   (totalAdjusted > 0 ? ` Â· advance adjusted à§³${totalAdjusted.toFixed(2)}` : ""),
         },
       });
 
-      return p;
+      return { payments: paymentRows, batchId };
     });
 
-    return Response.json(payment);
+    return Response.json(result);
   } catch (err) {
     if (err instanceof PaymentAlreadyPaidError) {
       return Response.json({ error: "Already paid" }, { status: 409 });
     }
     // Belt-and-braces: the DB unique constraint on Payment.sessionId is the
-    // final authority — surface a duplicate insert as a clean 409 too.
+    // final authority â€” surface a duplicate insert as a clean 409 too.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       return Response.json({ error: "Already paid" }, { status: 409 });
     }
     return dbErrorResponse(err);
   }
 }
-
-// ---------------------------------------------------------------------------
 // POST /api/advance — Give an advance (অগ্রিম) to a staff member.
 // ---------------------------------------------------------------------------
 const AdvanceSchema = z.object({
@@ -413,6 +537,7 @@ const AdvanceSchema = z.object({
 });
 
 export async function POST_advance(req: Request) {
+  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const body = AdvanceSchema.safeParse(await req.json());
   if (!body.success) return Response.json({ error: "Invalid payload" }, { status: 400 });
 
@@ -460,6 +585,27 @@ function parseShiftTime(t: string): [number, number] {
   let h = parseInt(m[1]) % 12;
   if (/PM/i.test(m[3])) h += 12;
   return [h, parseInt(m[2])];
+}
+
+/** Resolve the shift that a session must be judged against: its own
+ *  clock-in snapshot when present (historical fidelity), else the staff's
+ *  LIVE assignment (pre-snapshot legacy rows). */
+function sessionShiftProps(
+  staff: { shiftStart: string; shiftEnd: string },
+  session?: { shiftStartMin?: number | null; shiftEndMin?: number | null } | null
+): { startMin: number; endMin: number } {
+  if (session && Number.isInteger(session.shiftStartMin) && Number.isInteger(session.shiftEndMin)) {
+    return { startMin: session.shiftStartMin as number, endMin: session.shiftEndMin as number };
+  }
+  const [sh, sm] = parseShiftTime(staff.shiftStart);
+  const [eh, em] = parseShiftTime(staff.shiftEnd);
+  return { startMin: sh * 60 + sm, endMin: eh * 60 + em };
+}
+
+/** The staff's current shift as (startMin, endMin, startTime, endTime). */
+function staffShiftSnapshot(staff: { shiftStart: string; shiftEnd: string }) {
+  const { startMin, endMin } = sessionShiftProps(staff, null);
+  return { shiftStartMin: startMin, shiftEndMin: endMin, shiftStartTime: staff.shiftStart, shiftEndTime: staff.shiftEnd };
 }
 
 async function loadConfig(): Promise<Record<string, string>> {

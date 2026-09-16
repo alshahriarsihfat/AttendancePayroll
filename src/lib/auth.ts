@@ -27,7 +27,7 @@ export const ROLE_LABEL: Record<Role, string> = {
 
 export const ROLE_COLOR: Record<Role, string> = {
   ADMIN: "bg-rose-100 text-rose-700 ring-rose-200",
-  SUPERVISOR: "bg-indigo-100 text-indigo-700 ring-indigo-200",
+  SUPERVISOR: "bg-primary-soft text-primary ring-primary/25",
   STAFF: "bg-emerald-100 text-emerald-700 ring-emerald-200",
 };
 
@@ -43,7 +43,7 @@ const PERMISSIONS: Record<Role, Permission[]> = {
     "manage.leave", "pay.staff", "clock.self", "download.slip", "view.financials",
   ],
   SUPERVISOR: [
-    "view.floor", "manage.leave", "pay.staff", "clock.self", "download.slip", "view.financials",
+    "view.floor", "view.attendance", "manage.leave", "pay.staff", "clock.self", "download.slip", "view.financials",
   ],
   STAFF: ["clock.self", "download.slip"],
 };

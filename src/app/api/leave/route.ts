@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { dbErrorResponse } from "@/lib/api-error";
+import { sessionFromRequest } from "@/lib/auth-session";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,7 @@ const CreateLeave = z.object({
 });
 
 export async function POST(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = CreateLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave payload" }, { status: 400 });
   try {
@@ -23,8 +25,10 @@ export async function POST(request: Request) {
         id: parsed.data.recordId,
         staffId: parsed.data.staffId,
         leaveType: parsed.data.leaveType,
-        fromDate: new Date(`${parsed.data.fromDate}T00:00:00`),
-        toDate: new Date(`${parsed.data.toDate}T00:00:00`),
+        // Store as Dhaka midnight (+06:00) — identical calendar day whether the
+        // server runs in UTC (Vercel) or in Bangladesh (local dev).
+        fromDate: new Date(`${parsed.data.fromDate}T00:00:00+06:00`),
+        toDate: new Date(`${parsed.data.toDate}T00:00:00+06:00`),
         days: parsed.data.days,
         reason: parsed.data.reason || null,
       },
@@ -43,6 +47,7 @@ const DecideLeave = z.object({
 });
 
 export async function PATCH(request: Request) {
+  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = DecideLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave decision" }, { status: 400 });
   try {

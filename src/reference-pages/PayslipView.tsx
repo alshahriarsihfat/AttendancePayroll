@@ -2,13 +2,19 @@ import { useApp } from "../context/AppContext";
 import { Card, Button, EmptyState } from "../components/ui";
 import { PhotoAvatar } from "../components/PhotoAvatar";
 import { Icon } from "../components/icons";
-import { formatBDT, formatNumber } from "../lib/currency";
-import { formatDate, formatDuration, formatLongDate, formatTime12 } from "../lib/dates";
+import { formatBDT, formatNumber, payRound } from "../lib/currency";
+import { formatDate, formatDateTime, formatDuration, formatLongDate, formatTime12 } from "../lib/dates";
 import { configValue } from "../lib/config";
+import type { Payment } from "../types";
 
 // ============================================================================
-// Payslip — modern, print-optimised (A4). Pharmacy letterhead details are
-// admin-editable in Settings (ORG_ADDRESS / PHONE / EMAIL / LICENSE).
+// Payslip / Settlement Receipt â€” modern, print-optimised (A4). Pharmacy
+// letterhead details are admin-editable in Settings (ORG_ADDRESS / PHONE /
+// EMAIL / LICENSE).
+//
+// A single Payment row shows one day; a multi-day settlement (rows sharing a
+// batchId) is itemized date-by-date with its own hours & money per day, then
+// a batch total â€” exactly the days/hours covered by that one transaction.
 // ============================================================================
 
 export function PayslipView() {
@@ -16,7 +22,6 @@ export function PayslipView() {
   const id = view.params?.id ?? "";
   const p = paymentFor(id);
   const staff = p ? data.staff.find((s) => s.employeeId === p.staffId) : undefined;
-  const sess = p ? data.sessions.find((s) => s.id === p.sessionId) : undefined;
 
   if (!p || !staff) {
     return (
@@ -25,6 +30,21 @@ export function PayslipView() {
       </Card>
     );
   }
+
+  // ---- resolve this settlement's day-wise rows ----
+  // If the Payment belongs to a batch, every row of that batch is included;
+  // a legacy/pre-batch Payment renders on its own.
+  const rows: Payment[] = (p.batchId
+    ? data.payments.filter((x) => x.batchId === p.batchId)
+    : [p])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const primary = rows[0];
+  const grossTotal = payRound(rows.reduce((s, r) => s + r.grossPay + r.overtimePay, 0));
+  const dedTotal = payRound(rows.reduce((s, r) => s + r.overBreakDeduction, 0));
+  const netTotal = payRound(rows.reduce((s, r) => s + r.netPay, 0));
+  const workedTotal = rows.reduce((s, r) => s + r.workedMin, 0);
+  const isMulti = rows.length > 1;
 
   // Admin-editable letterhead details.
   const org = {
@@ -35,21 +55,12 @@ export function PayslipView() {
     license: configValue(data.config, "ORG_LICENSE", ""),
     footer: configValue(data.config, "PAYSPLIT_FOOTER", ""),
   };
-  const over = p.overBreakDeduction;
-
-  const earnings = [
-    { label: `Duty Pay (${formatNumber(p.workedMin / 60, 1)} hrs)`, value: p.grossPay },
-    ...(p.overtimeMin > 0 ? [{ label: `Overtime (${formatDuration(p.overtimeMin)} × 1.25)`, value: p.overtimePay }] : []),
-  ];
-  const deductions = [
-    ...(over > 0 ? [{ label: `Over-break (${formatDuration(p.overBreakMin)})`, value: over }] : []),
-  ];
 
   return (
     <div className="space-y-5 animate-fade">
       {/* Screen-only toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <button onClick={() => navigate("payments")} className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800">
+        <button onClick={() => navigate("payments")} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
           <Icon name="chevronLeft" size={16} /> Payments
         </button>
         <Button variant="secondary" icon="print" onClick={() => window.print()}>Print / Save PDF</Button>
@@ -59,9 +70,9 @@ export function PayslipView() {
       <div className="pl-document mx-auto w-full max-w-3xl bg-white text-slate-900 shadow-xl">
 
         {/* Letterhead */}
-        <header className="flex items-start justify-between gap-6 border-b-4 border-emerald-700 px-8 pb-5 pt-7">
+        <header className="flex items-start justify-between gap-6 border-b-4 border-primary px-8 pb-5 pt-7">
           <div className="flex items-start gap-4">
-            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-emerald-700 text-white">
+            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-white">
               <Icon name="pill" size={30} />
             </span>
             <div className="min-w-0">
@@ -75,14 +86,17 @@ export function PayslipView() {
             </div>
           </div>
           <div className="shrink-0 text-right">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">Payslip</p>
-            <p className="mt-0.5 text-lg font-bold tabular-nums">{formatDate(p.date)}</p>
-            <p className="mt-1 text-[10px] text-slate-500">{formatLongDate(p.date)}</p>
-            <p className="mt-1 font-mono text-[10px] text-slate-400">{p.id}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+              {isMulti ? "Settlement Receipt" : "Payslip"}
+            </p>
+            <p className="mt-0.5 text-lg font-bold tabular-nums">{formatDateTime(primary.paidAt)}</p>
+            <p className="mt-1 text-[10px] text-slate-500">Issued · {formatLongDate(primary.paidAt)}</p>
+            <p className="mt-1 font-mono text-[10px] text-slate-400">
+              {primary.id}{isMulti && primary.batchId ? ` · ${primary.batchId.slice(0, 8).toUpperCase()}` : ""}
+            </p>
           </div>
         </header>
-
-        {/* Employee strip */}
+{/* Employee strip */}
         <section className="flex items-center justify-between gap-4 border-b border-slate-200 bg-slate-50 px-8 py-4">
           <div className="flex items-center gap-3">
             <PhotoAvatar name={staff.fullName} photoUrl={staff.photoUrl} size={46} ring={false} />
@@ -97,72 +111,86 @@ export function PayslipView() {
             </div>
           </div>
           <div className="shrink-0 text-right">
-            <p className="text-[10px] uppercase tracking-wide text-slate-400">Pay Period</p>
-            <p className="text-sm font-bold">{p.periodLabel}</p>
-            {sess && (
-              <p className="mt-0.5 text-[10px] text-slate-500">
-                {formatTime12(sess.timeIn)} → {sess.timeOut ? formatTime12(sess.timeOut) : "—"}
-              </p>
-            )}
+            <p className="text-[10px] uppercase tracking-wide text-slate-400">
+              {isMulti ? "Days Covered" : "Pay Period"}
+            </p>
+            <p className="text-sm font-bold">{isMulti ? `${rows.length} days` : primary.periodLabel}</p>
+            <p className="mt-0.5 text-[10px] text-slate-500">
+              {isMulti
+                ? `${formatDate(rows[0].date)} → ${formatDate(rows[rows.length - 1].date)}`
+                : (() => {
+                    const sess = data.sessions.find((s) => s.id === primary.sessionId);
+                    return sess ? `${formatTime12(sess.timeIn)} → ${sess.timeOut ? formatTime12(sess.timeOut) : "—"}` : "—";
+                  })()}
+            </p>
           </div>
         </section>
 
-        {/* Summary tiles — 2×2 on mobile, 4-across on desktop */}
+        {/* Summary tiles â€” 2Ã—2 on mobile, 4-across on desktop */}
         <section className="grid grid-cols-2 divide-slate-200 border-b border-slate-200 sm:grid-cols-4 sm:divide-x">
-          <Tile label="Duty Hours" value={formatNumber(p.dutyHours, 1)} />
-          <Tile label="Worked" value={formatDuration(p.workedMin)} />
-          <Tile label="Break" value={formatDuration(p.breakMin)} />
-          <Tile label="Rate / hr" value={`৳${formatNumber(p.hourlyRate, 2)}`} />
+          <Tile label="Duty Hours" value={formatNumber(primary.dutyHours, 1)} />
+          <Tile label="Worked" value={formatDuration(workedTotal)} />
+          <Tile label="Break" value={formatDuration(rows.reduce((s, r) => s + r.breakMin, 0))} />
+          <Tile label="Net Paid" value={formatBDT(netTotal, false)} />
         </section>
 
-        {/* Earnings & deductions — stack on mobile */}
-        <section className="grid grid-cols-1 gap-6 px-6 py-6 sm:grid-cols-2 sm:gap-8 sm:px-8">
-          <div>
-            <h2 className="mb-2 border-b border-emerald-200 pb-1 text-[11px] font-bold uppercase tracking-wider text-emerald-700">Earnings</h2>
-            <table className="w-full text-sm">
-              <tbody>
-                {earnings.map((e) => (
-                  <tr key={e.label} className="border-b border-slate-100">
-                    <td className="py-2 pr-2 text-slate-600">{e.label}</td>
-                    <td className="py-2 text-right font-semibold tabular-nums text-slate-900">{formatBDT(e.value)}</td>
+        {/* ============ DAY-WISE ITEMISED COVERAGE ============ */}
+        <section className="px-8 pt-5">
+          <h2 className="border-b border-primary/40 pb-1 text-[11px] font-bold uppercase tracking-wider text-primary">
+            {isMulti ? `Days Covered by This Transaction (${rows.length})` : "Day Covered"}
+          </h2>
+          <table className="mt-2 w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                <th className="py-1.5 pr-2">Date</th>
+                <th className="py-1.5 pr-2">Clock In → Out</th>
+                <th className="py-1.5 pr-2 text-right">Worked</th>
+                <th className="py-1.5 pr-2 text-right">Gross</th>
+                <th className="py-1.5 pr-2 text-right">Ded.</th>
+                <th className="py-1.5 text-right">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const sess = data.sessions.find((s) => s.id === r.sessionId);
+                return (
+                  <tr key={r.id} className="border-b border-slate-100">
+                    <td className="py-2 pr-2 font-medium text-slate-900">{formatDate(r.date)}</td>
+                    <td className="py-2 pr-2 whitespace-nowrap text-slate-600">
+                      {sess ? `${formatTime12(sess.timeIn)} → ${sess.timeOut ? formatTime12(sess.timeOut) : "—"}` : r.periodLabel}
+                    </td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-slate-600">{formatDuration(r.workedMin)}</td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-slate-600">{formatBDT(r.grossPay + r.overtimePay, false)}</td>
+                    <td className="py-2 pr-2 text-right tabular-nums text-slate-500">{r.overBreakDeduction > 0 ? `−${formatBDT(r.overBreakDeduction, false)}` : "—"}</td>
+                    <td className="py-2 text-right font-semibold tabular-nums text-emerald-800">{formatBDT(r.netPay)}</td>
                   </tr>
-                ))}
-                <tr className="border-t-2 border-emerald-300">
-                  <td className="py-2 font-bold text-slate-900">Gross Earnings</td>
-                  <td className="py-2 text-right font-bold tabular-nums text-emerald-800">{formatBDT(p.grossPay + p.overtimePay)}</td>
+                );
+              })}
+              {isMulti && (
+                <tr className="border-t-2 border-primary/40">
+                  <td className="py-2 pr-2 font-bold text-slate-900">Batch Total</td>
+                  <td className="py-2 pr-2" />
+                  <td className="py-2 pr-2 text-right font-semibold tabular-nums text-slate-900">{formatDuration(workedTotal)}</td>
+                  <td className="py-2 pr-2 text-right font-semibold tabular-nums text-slate-900">{formatBDT(grossTotal)}</td>
+                  <td className="py-2 pr-2 text-right font-semibold tabular-nums text-slate-900">{dedTotal > 0 ? `−${formatBDT(dedTotal, false)}` : "—"}</td>
+                  <td className="py-2 text-right font-bold tabular-nums text-emerald-800">{formatBDT(netTotal)}</td>
                 </tr>
-              </tbody>
-            </table>
-          </div>
-          <div>
-            <h2 className="mb-2 border-b border-rose-200 pb-1 text-[11px] font-bold uppercase tracking-wider text-rose-700">Deductions</h2>
-            <table className="w-full text-sm">
-              <tbody>
-                {deductions.length === 0 && (
-                  <tr><td className="py-2 text-slate-400" colSpan={2}>No deductions</td></tr>
-                )}
-                {deductions.map((d) => (
-                  <tr key={d.label} className="border-b border-slate-100">
-                    <td className="py-2 pr-2 text-slate-600">{d.label}</td>
-                    <td className="py-2 text-right font-semibold tabular-nums text-rose-700">−{formatBDT(d.value)}</td>
-                  </tr>
-                ))}
-                <tr className="border-t-2 border-rose-300">
-                  <td className="py-2 font-bold text-slate-900">Total Deductions</td>
-                  <td className="py-2 text-right font-bold tabular-nums text-rose-700">−{formatBDT(over)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+              )}
+            </tbody>
+          </table>
         </section>
-
-        {/* Net pay banner */}
-        <section className="mx-8 mb-6 flex items-center justify-between rounded-xl bg-emerald-700 px-6 py-4 text-white">
+{/* Net pay banner */}
+        <section className="mx-8 mb-6 mt-6 flex items-center justify-between rounded-xl bg-emerald-700 px-6 py-4 text-white">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-100">Net Pay</p>
-            <p className="text-[10px] text-emerald-200">Payable to {staff.fullName} · Paid by {p.paidBy}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-100">
+              {isMulti ? "Total Settled" : "Net Pay"}
+            </p>
+            <p className="text-[10px] text-emerald-200">
+              Payable to {staff.fullName} · Paid by {primary.paidBy}
+              {isMulti && primary.batchId ? ` · Ref ${primary.batchId.slice(0, 8).toUpperCase()}` : ""}
+            </p>
           </div>
-          <p className="text-4xl font-extrabold tabular-nums tracking-tight">{formatBDT(p.netPay)}</p>
+          <p className="text-4xl font-extrabold tabular-nums tracking-tight">{formatBDT(netTotal)}</p>
         </section>
 
         {/* Footer */}
@@ -171,7 +199,8 @@ export function PayslipView() {
             {org.footer || "This is a computer-generated payslip and does not require a signature."}
             {" "}Paid meal (30m) and rest (15m) allowances are provided free; time beyond the 45-minute combined
             ceiling is deducted at the prorated basic rate. Time worked past the scheduled shift end is paid as
-            overtime at 1.25× the basic rate.
+            overtime at 1.25× the basic rate. Each date above is a separate day-wise payment; the net total is the
+            amount paid out in this single transaction.
           </p>
           <div className="mt-3 flex items-end justify-between">
             <p className="text-[9px] text-slate-400">Generated by {org.name} Staff &amp; Pay System</p>

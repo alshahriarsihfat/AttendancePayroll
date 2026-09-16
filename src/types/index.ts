@@ -109,6 +109,17 @@ export interface TimeSession {
   completed: boolean;
   /** True if the system auto-clocked-out this session. */
   autoClockedOut?: boolean;
+  // ---------------------------------------------------------------------------
+  // Shift snapshot captured at clock-in. Historical sessions are judged against
+  // THIS shift (not the employee's live shiftStart/shiftEnd), so editing a
+  // staff member's shift never retroactively rewrites past attendance/pay.
+  // Absent on legacy rows created before snapshots existed — flagged in the UI
+  // so a deliberate migration decision can be made (no silent backfill).
+  // ---------------------------------------------------------------------------
+  shiftStartMin?: number;
+  shiftEndMin?: number;
+  shiftStartTime?: string;
+  shiftEndTime?: string;
 }
 
 export interface OvertimeLog {
@@ -139,9 +150,12 @@ export interface Payment {
   hourlyRate: number;
   grossPay: number;
   overBreakDeduction: number;
+  advanceAdjusted: number;
   netPay: number;
   status: PaymentStatus;
   paidBy: string;
+  /** Settlement batch id â€” day-wise rows paid together in ONE transaction share it. */
+  batchId?: string;
 }
 
 export interface LeaveRequest {

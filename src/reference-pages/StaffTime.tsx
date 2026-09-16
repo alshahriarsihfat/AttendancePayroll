@@ -44,10 +44,10 @@ export function StaffSelector({ selectedId, onSelect }: StaffSelectorProps) {
     const sCalc = computeSession(sSess, s, data.config, now);
     const clockStatus = sCalc ? sCalc.clockStatus : "off";
     if (sOnLeave) return <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700"><span className="text-sm">&#128197;</span> Leave</span>;
-    if (clockStatus === "working") return <span className="inline-flex items-center gap-1 rounded-full bg-teal-100 px-2 py-0.5 text-xs font-semibold text-teal-700"><span className="text-sm">&#128994;</span> On Duty</span>;
+    if (clockStatus === "working") return <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 "><span className="text-sm">&#128994;</span> On Duty</span>;
     if (clockStatus === "on-meal") return <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700"><span className="text-sm">&#128339;</span> Meal</span>;
     if (clockStatus === "on-rest") return <span className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700"><span className="text-sm">&#9749;</span> Rest</span>;
-    return <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><span className="text-sm">&#9898;</span> Off</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full bg-surface-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground"><span className="text-sm">&#9898;</span> Off</span>;
   };
 
   if (!isSupervisor) {
@@ -61,17 +61,17 @@ export function StaffSelector({ selectedId, onSelect }: StaffSelectorProps) {
   return (
     <div className="space-y-5 animate-fade">
       <Card className="p-4">
-        <label className="mb-1.5 block text-[13px] font-medium text-slate-700">Select Staff Member</label>
+        <label className="mb-1.5 block text-[13px] font-medium text-foreground">Select Staff Member</label>
         <input
           type="text"
           placeholder="Search staff..."
           value={searchTerm}
           onFocus={() => setIsDropdownOpen(true)}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
+          className="w-full rounded-lg border border-edge px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
         {isDropdownOpen && (
-          <div className="mt-3 max-h-60 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg transform-gpu will-change-transform transition-all duration-200">
+          <div className="mt-3 max-h-60 overflow-y-auto rounded-lg border border-edge bg-surface shadow-lg transform-gpu will-change-transform transition-all duration-200">
             {searchFiltered.map((s) => (
               <button
                 key={s.employeeId}
@@ -80,28 +80,28 @@ export function StaffSelector({ selectedId, onSelect }: StaffSelectorProps) {
                   setSearchTerm("");
                   setIsDropdownOpen(false);
                 }}
-                className={s.employeeId === selectedId ? "flex w-full items-center justify-between rounded-lg bg-emerald-50 p-3 text-left" : "flex w-full items-center justify-between rounded-lg p-3 text-left hover:bg-slate-50"}
+                className={s.employeeId === selectedId ? "flex w-full items-center justify-between rounded-lg bg-primary-soft p-3 text-left" : "flex w-full items-center justify-between rounded-lg p-3 text-left hover:bg-surface-muted"}
               >
                 <div className="flex-1">
-                  <p className="font-medium text-slate-900">{s.fullName}</p>
-                  <p className="text-xs text-slate-500">{s.employeeId} · {s.jobTitle}</p>
+                  <p className="font-medium text-foreground">{s.fullName}</p>
+                  <p className="text-xs text-muted-foreground">{s.employeeId} · {s.jobTitle}</p>
                 </div>
                 {getStatusBadge(s)}
               </button>
             ))}
             {searchFiltered.length === 0 && searchTerm && (
-              <p className="py-3 text-center text-slate-500">No staff match found.</p>
+              <p className="py-3 text-center text-muted-foreground">No staff match found.</p>
             )}
           </div>
         )}
         {selectedStaff && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-sm text-indigo-700">
+          <div className="mt-3 flex items-center gap-2 rounded-lg bg-primary-soft px-3 py-2 text-sm text-primary">
             <Icon name="check" size={15} className="shrink-0" />
             <span className="font-semibold">{selectedStaff.fullName}</span>
-            <span className="text-xs text-indigo-500">{selectedStaff.employeeId} · now showing in the Clock tab</span>
+            <span className="text-xs text-primary">{selectedStaff.employeeId} · now showing in the Clock tab</span>
           </div>
         )}
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-400">
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-faint-foreground">
           <Icon name="info" size={12} /> Selecting a staff member opens their full Clock Terminal. All actions are logged with "managed by {supervisorName}".
         </p>
       </Card>
