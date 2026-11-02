@@ -53,7 +53,7 @@ export async function POST(request: Request) {
           action: "APPROVAL_SUBMITTED", entityType: "ApprovalRequest", entityId: created.id,
           actorName: actor.name, actorRole: actor.role,
           summary: `${actor.name} submitted ${created.type} approval for ${parsed.data.staffId}`,
-          managedBy: actor.role === "SUPERVISOR" ? actor.name : null,
+          managedBy: actor.role === "SUPERVISOR" && actor.staffId && actor.staffId !== parsed.data.staffId ? actor.name : null,
         },
       });
       return created;
