@@ -36,16 +36,27 @@ export async function POST(request: Request) {
   try {
     const session = await prisma.timeSession.findUnique({ where: { id: parsed.data.sessionId }, select: { staffId: true } });
     if (!session || session.staffId !== parsed.data.staffId) return Response.json({ error: "Session does not belong to this staff member" }, { status: 400 });
-    const approval = await prisma.approvalRequest.create({
-      data: {
-        id: parsed.data.id,
-        staffId: parsed.data.staffId,
-        sessionId: parsed.data.sessionId,
-        type: parsed.data.type,
-        deltaMin: parsed.data.deltaMin,
-        date: new Date(`${parsed.data.date}T00:00:00+06:00`),
-        status: "pending",
-      },
+    const approval = await prisma.$transaction(async (tx) => {
+      const created = await tx.approvalRequest.create({
+        data: {
+          id: parsed.data.id,
+          staffId: parsed.data.staffId,
+          sessionId: parsed.data.sessionId,
+          type: parsed.data.type,
+          deltaMin: parsed.data.deltaMin,
+          date: new Date(`${parsed.data.date}T00:00:00+06:00`),
+          status: "pending",
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: "APPROVAL_SUBMITTED", entityType: "ApprovalRequest", entityId: created.id,
+          actorName: actor.name, actorRole: actor.role,
+          summary: `${actor.name} submitted ${created.type} approval for ${parsed.data.staffId}`,
+          managedBy: actor.role === "SUPERVISOR" ? actor.name : null,
+        },
+      });
+      return created;
     });
     return Response.json(approval, { status: 201 });
   } catch (error) {
@@ -78,7 +89,17 @@ export async function PATCH(request: Request) {
         },
       });
       if (changed.count !== 1) return null;
-      return tx.approvalRequest.findUnique({ where: { id: parsed.data.id } });
+      const resolved = await tx.approvalRequest.findUnique({ where: { id: parsed.data.id } });
+      if (resolved) {
+        await tx.auditLog.create({
+          data: {
+            action: "APPROVAL_RESOLVED", entityType: "ApprovalRequest", entityId: resolved.id,
+            actorName: actor.name, actorRole: actor.role,
+            summary: `${actor.name} ${parsed.data.status} approval for ${resolved.staffId}`,
+          },
+        });
+      }
+      return resolved;
     });
     if (!updated) return Response.json({ error: "Approval request not found or already resolved" }, { status: 409 });
     return Response.json(updated);
