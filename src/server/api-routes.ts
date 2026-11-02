@@ -551,27 +551,27 @@ export async function POST_advance(req: Request) {
     const staff = await prisma.staff.findUnique({ where: { employeeId: body.data.staffId } });
     if (!staff) return Response.json({ error: "Staff not found" }, { status: 404 });
 
-    const newBalance = payRound(staff.advance + body.data.amount);
-
-    await prisma.$transaction([
-      prisma.staff.update({
+    const newBalance = await prisma.$transaction(async (tx) => {
+      const updatedStaff = await tx.staff.update({
         where: { employeeId: body.data.staffId },
-        data: { advance: newBalance },
-      }),
-      prisma.advanceLog.create({
+        data: { advance: { increment: payRound(body.data.amount) } },
+        select: { advance: true, fullName: true },
+      });
+      await tx.advanceLog.create({
         data: {
           staffId: body.data.staffId, type: "GIVEN", amount: payRound(body.data.amount),
-          balanceAfter: newBalance, note: body.data.note, createdBy: actor.name,
+          balanceAfter: updatedStaff.advance, note: body.data.note, createdBy: actor.name,
         },
-      }),
-      prisma.auditLog.create({
+      });
+      await tx.auditLog.create({
         data: {
           action: "ADVANCE_GIVEN", entityType: "Staff", entityId: body.data.staffId,
           actorName: actor.name, actorRole: actor.role,
-          summary: `Advance ৳${body.data.amount.toFixed(2)} given to ${staff.fullName}`,
+          summary: `Advance ৳${body.data.amount.toFixed(2)} given to ${updatedStaff.fullName}`,
         },
-      }),
-    ]);
+      });
+      return updatedStaff.advance;
+    });
 
     return Response.json({ ok: true, balance: newBalance });
   } catch (err) {
