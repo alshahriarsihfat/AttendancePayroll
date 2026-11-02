@@ -32,7 +32,9 @@ export async function GET() {
 const ConfigUpdate = z.object({ key: z.string().min(1), value: z.string() });
 
 export async function PUT(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = ConfigUpdate.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid config payload" }, { status: 400 });
   try {
