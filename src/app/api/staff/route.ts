@@ -109,19 +109,24 @@ function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
 }
 
 export async function POST(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = StaffSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
   try {
     const staff = await prisma.staff.create({ data: staffData(parsed.data) });
-    return Response.json(staff, { status: 201 });
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff, { status: 201 });
   } catch (error) {
     return dbErrorResponse(error);
   }
 }
 
 export async function PUT(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = StaffUpdateSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload", details: parsed.error.flatten() }, { status: 400 });
   try {
@@ -129,14 +134,17 @@ export async function PUT(request: Request) {
       where: { employeeId: parsed.data.employeeId! },
       data: staffUpdateData(parsed.data),
     });
-    return Response.json(staff);
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff);
   } catch (error) {
     return dbErrorResponse(error);
   }
 }
 
 export async function DELETE(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const body = await request.json() as { employeeId?: string };
   if (!body.employeeId) return Response.json({ error: "employeeId is required" }, { status: 400 });
   try {
@@ -144,7 +152,8 @@ export async function DELETE(request: Request) {
       where: { employeeId: body.employeeId },
       data: { isActive: false, status: "TERMINATED", endDate: new Date() },
     });
-    return Response.json(staff);
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff);
   } catch (error) {
     return dbErrorResponse(error);
   }
