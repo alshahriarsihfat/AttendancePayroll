@@ -8,99 +8,98 @@ export const runtime = "nodejs";
 const CreateLeave = z.object({
   recordId: z.string().min(1),
   staffId: z.string().min(1),
-  leaveType: z.string().min(1),
-  fromDate: z.string().min(10),
-  toDate: z.string().min(10),
-  days: z.number().nonnegative(),
+  leaveType: z.string().trim().min(1),
+  fromDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+  toDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+  days: z.number().positive(),
   reason: z.string().optional(),
 });
+const dhakaDate = (value: string) => new Date(`${value}T00:00:00+06:00`);
+const dhakaYear = (date: Date) => Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Dhaka", year: "numeric" }).format(date));
 
 export async function POST(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = CreateLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave payload" }, { status: 400 });
-  try {
-    const requestRow = await prisma.leaveRequest.create({
-      data: {
-        id: parsed.data.recordId,
-        staffId: parsed.data.staffId,
-        leaveType: parsed.data.leaveType,
-        // Store as Dhaka midnight (+06:00) — identical calendar day whether the
-        // server runs in UTC (Vercel) or in Bangladesh (local dev).
-        fromDate: new Date(`${parsed.data.fromDate}T00:00:00+06:00`),
-        toDate: new Date(`${parsed.data.toDate}T00:00:00+06:00`),
-        days: parsed.data.days,
-        reason: parsed.data.reason || null,
-      },
-    });
-    return Response.json(requestRow, { status: 201 });
-  } catch (error) {
-    return dbErrorResponse(error);
+  if (actor.role === "STAFF" && actor.staffId !== parsed.data.staffId) {
+    return Response.json({ error: "You can only submit leave for yourself" }, { status: 403 });
   }
+  if (dhakaDate(parsed.data.fromDate) > dhakaDate(parsed.data.toDate)) {
+    return Response.json({ error: "fromDate must be on or before toDate" }, { status: 400 });
+  }
+  try {
+    const staff = await prisma.staff.findUnique({ where: { employeeId: parsed.data.staffId }, select: { employeeId: true, fullName: true } });
+    if (!staff) return Response.json({ error: "Staff not found" }, { status: 404 });
+    const row = await prisma.$transaction(async (tx) => {
+      const created = await tx.leaveRequest.create({
+        data: {
+          id: parsed.data.recordId, staffId: parsed.data.staffId, leaveType: parsed.data.leaveType,
+          fromDate: dhakaDate(parsed.data.fromDate), toDate: dhakaDate(parsed.data.toDate),
+          days: parsed.data.days, reason: parsed.data.reason?.trim() || null, status: "Pending",
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: "LEAVE_SUBMITTED", entityType: "LeaveRequest", entityId: created.id,
+          actorName: actor.name, actorRole: actor.role,
+          summary: `${actor.name} submitted leave for ${staff.fullName}`,
+          managedBy: actor.staffId && actor.staffId !== parsed.data.staffId ? actor.name : null,
+        },
+      });
+      return created;
+    });
+    return Response.json(row, { status: 201 });
+  } catch (error) { return dbErrorResponse(error); }
 }
 
 const DecideLeave = z.object({
   recordId: z.string().min(1),
   status: z.enum(["Approved", "Rejected", "Cancelled"]),
-  approvedBy: z.string().min(1),
   comment: z.string().optional(),
 });
 
 export async function PATCH(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = DecideLeave.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid leave decision" }, { status: 400 });
   try {
-    const updated = await prisma.leaveRequest.update({
-      where: { id: parsed.data.recordId },
-      data: {
-        status: parsed.data.status,
-        approvedBy: parsed.data.approvedBy,
-        approvedAt: new Date(),
-        comment: parsed.data.comment?.trim() || null,
-      },
-    });
+    const existing = await prisma.leaveRequest.findUnique({ where: { id: parsed.data.recordId } });
+    if (!existing) return Response.json({ error: "Leave request not found" }, { status: 404 });
+    const selfCancel = actor.role === "STAFF" && actor.staffId === existing.staffId && parsed.data.status === "Cancelled";
+    if (actor.role === "STAFF" && !selfCancel) return Response.json({ error: "Only Admin or Supervisor can decide leave" }, { status: 403 });
+    if (selfCancel && existing.status !== "Pending") return Response.json({ error: "Only pending leave can be cancelled" }, { status: 409 });
+    if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR" && !selfCancel) return Response.json({ error: "Insufficient permissions" }, { status: 403 });
 
-    // -----------------------------------------------------------------------
-    // M5 FIX: Leave balance decrement (DB-persisted)
-    // -----------------------------------------------------------------------
-    // When a leave request is Approved, the used days for that staff member's
-    // leave balance must be incremented in the DATABASE — not just in the
-    // frontend's ephemeral state (which was lost on refresh).
-    if (parsed.data.status === "Approved" && updated.days > 0) {
-      const year = updated.fromDate.getFullYear();
-      const balance = await prisma.leaveBalance.findUnique({
-        where: {
-          staffId_leaveType_year: {
-            staffId: updated.staffId,
-            leaveType: updated.leaveType,
-            year,
-          },
-        },
+    const updated = await prisma.$transaction(async (tx) => {
+      const changed = await tx.leaveRequest.updateMany({
+        where: { id: existing.id, status: existing.status },
+        data: { status: parsed.data.status, approvedBy: selfCancel ? null : actor.name, approvedAt: new Date(), comment: parsed.data.comment?.trim() || null },
       });
+      if (changed.count !== 1) throw new Error("LEAVE_ALREADY_DECIDED");
 
-      if (balance) {
-        // Increment used days by the approved leave duration
-        await prisma.leaveBalance.update({
-          where: { id: balance.id },
-          data: { usedDays: balance.usedDays + updated.days },
-        });
-      } else {
-        // No balance row exists yet — create one so the decrement is recorded
-        await prisma.leaveBalance.create({
-          data: {
-            staffId: updated.staffId,
-            leaveType: updated.leaveType,
-            entitledDays: 0,
-            usedDays: updated.days,
-            year,
-          },
+      if (parsed.data.status === "Approved" && existing.days > 0) {
+        const year = dhakaYear(existing.fromDate);
+        await tx.leaveBalance.upsert({
+          where: { staffId_leaveType_year: { staffId: existing.staffId, leaveType: existing.leaveType, year } },
+          create: { staffId: existing.staffId, leaveType: existing.leaveType, entitledDays: 0, usedDays: existing.days, year },
+          update: { usedDays: { increment: existing.days } },
         });
       }
-    }
-
+      await tx.auditLog.create({
+        data: {
+          action: selfCancel ? "LEAVE_CANCELLED" : "LEAVE_DECIDED",
+          entityType: "LeaveRequest", entityId: existing.id,
+          actorName: actor.name, actorRole: actor.role,
+          summary: `${actor.name} set leave request to ${parsed.data.status}`,
+        },
+      });
+      return tx.leaveRequest.findUniqueOrThrow({ where: { id: existing.id } });
+    });
     return Response.json(updated);
   } catch (error) {
+    if (error instanceof Error && error.message === "LEAVE_ALREADY_DECIDED") return Response.json({ error: "Leave request was already updated" }, { status: 409 });
     return dbErrorResponse(error);
   }
 }
