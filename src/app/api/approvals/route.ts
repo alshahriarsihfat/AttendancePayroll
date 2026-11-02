@@ -26,10 +26,16 @@ const CreateApproval = z.object({
 });
 
 export async function POST(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = CreateApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval payload" }, { status: 400 });
+  if (actor.role === "STAFF" && actor.staffId !== parsed.data.staffId) {
+    return Response.json({ error: "You can only create approvals for yourself" }, { status: 403 });
+  }
   try {
+    const session = await prisma.timeSession.findUnique({ where: { id: parsed.data.sessionId }, select: { staffId: true } });
+    if (!session || session.staffId !== parsed.data.staffId) return Response.json({ error: "Session does not belong to this staff member" }, { status: 400 });
     const approval = await prisma.approvalRequest.create({
       data: {
         id: parsed.data.id,
@@ -55,7 +61,9 @@ const ResolveApproval = z.object({
 });
 
 export async function PATCH(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Only Admin or Supervisor can resolve approvals" }, { status: 403 });
   const parsed = ResolveApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval decision" }, { status: 400 });
   try {
@@ -63,7 +71,7 @@ export async function PATCH(request: Request) {
       where: { id: parsed.data.id },
       data: {
         status: parsed.data.status,
-        resolvedBy: parsed.data.resolvedBy,
+        resolvedBy: actor.name,
         resolvedAt: new Date(),
         managerNote: parsed.data.managerNote?.trim() || null,
       },
