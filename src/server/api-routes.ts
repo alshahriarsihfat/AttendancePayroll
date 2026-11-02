@@ -382,7 +382,8 @@ function computeSessionPayout(
   };
 }
 export async function POST_payment(req: Request) {
-  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
 
   let raw: unknown;
   try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
@@ -390,7 +391,7 @@ export async function POST_payment(req: Request) {
   if (!body.success) return Response.json({ error: "Invalid payload", details: body.error.flatten() }, { status: 400 });
 
   const sessionIds = body.data.sessionIds ?? (body.data.sessionId ? [body.data.sessionId] : []);
-  const paidBy = body.data.paidBy;
+  const paidBy = actor.name;
 
   try {
     const sessions = await prisma.timeSession.findMany({
@@ -505,7 +506,7 @@ export async function POST_payment(req: Request) {
       await tx.auditLog.create({
         data: {
           action: "PAYMENT", entityType: "Payment", entityId: paymentRows[0].id,
-          actorName: paidBy, actorRole: "SUPERVISOR",
+          actorName: actor.name, actorRole: actor.role,
           summary: `Paid à§³${netTotal.toFixed(2)} to ${staff.fullName} (${rows.length} day${rows.length > 1 ? "s" : ""}: ${dateList})` +
                    (totalAdjusted > 0 ? ` Â· advance adjusted à§³${totalAdjusted.toFixed(2)}` : ""),
         },
@@ -532,13 +533,16 @@ export async function POST_payment(req: Request) {
 const AdvanceSchema = z.object({
   staffId: z.string().min(1),
   amount: z.number().positive(),
-  createdBy: z.string().min(1),
+  createdBy: z.string().optional(),
   note: z.string().optional(),
 });
 
 export async function POST_advance(req: Request) {
-  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
-  const body = AdvanceSchema.safeParse(await req.json());
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  let raw: unknown;
+  try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
+  const body = AdvanceSchema.safeParse(raw);
   if (!body.success) return Response.json({ error: "Invalid payload" }, { status: 400 });
 
   try {
@@ -555,13 +559,13 @@ export async function POST_advance(req: Request) {
       prisma.advanceLog.create({
         data: {
           staffId: body.data.staffId, type: "GIVEN", amount: payRound(body.data.amount),
-          balanceAfter: newBalance, note: body.data.note, createdBy: body.data.createdBy,
+          balanceAfter: newBalance, note: body.data.note, createdBy: actor.name,
         },
       }),
       prisma.auditLog.create({
         data: {
           action: "ADVANCE_GIVEN", entityType: "Staff", entityId: body.data.staffId,
-          actorName: body.data.createdBy, actorRole: "SUPERVISOR",
+          actorName: actor.name, actorRole: actor.role,
           summary: `Advance ৳${body.data.amount.toFixed(2)} given to ${staff.fullName}`,
         },
       }),
