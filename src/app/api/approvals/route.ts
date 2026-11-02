@@ -56,7 +56,7 @@ export async function POST(request: Request) {
 const ResolveApproval = z.object({
   id: z.string().min(1),
   status: z.enum(["approved", "rejected"]),
-  resolvedBy: z.string().min(1),
+  resolvedBy: z.string().optional(),
   managerNote: z.string().optional(),
 });
 
@@ -67,15 +67,20 @@ export async function PATCH(request: Request) {
   const parsed = ResolveApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval decision" }, { status: 400 });
   try {
-    const updated = await prisma.approvalRequest.update({
-      where: { id: parsed.data.id },
-      data: {
-        status: parsed.data.status,
-        resolvedBy: actor.name,
-        resolvedAt: new Date(),
-        managerNote: parsed.data.managerNote?.trim() || null,
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const changed = await tx.approvalRequest.updateMany({
+        where: { id: parsed.data.id, status: "pending" },
+        data: {
+          status: parsed.data.status,
+          resolvedBy: actor.name,
+          resolvedAt: new Date(),
+          managerNote: parsed.data.managerNote?.trim() || null,
+        },
+      });
+      if (changed.count !== 1) return null;
+      return tx.approvalRequest.findUnique({ where: { id: parsed.data.id } });
     });
+    if (!updated) return Response.json({ error: "Approval request not found or already resolved" }, { status: 409 });
     return Response.json(updated);
   } catch (error) {
     return dbErrorResponse(error);
