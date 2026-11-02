@@ -9,8 +9,8 @@ const CreateLeave = z.object({
   recordId: z.string().min(1),
   staffId: z.string().min(1),
   leaveType: z.string().trim().min(1),
-  fromDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
-  toDate: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+  fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   days: z.number().positive(),
   reason: z.string().optional(),
 });
@@ -68,9 +68,10 @@ export async function PATCH(request: Request) {
     const existing = await prisma.leaveRequest.findUnique({ where: { id: parsed.data.recordId } });
     if (!existing) return Response.json({ error: "Leave request not found" }, { status: 404 });
     const selfCancel = actor.role === "STAFF" && actor.staffId === existing.staffId && parsed.data.status === "Cancelled";
-    if (actor.role === "STAFF" && !selfCancel) return Response.json({ error: "Only Admin or Supervisor can decide leave" }, { status: 403 });
-    if (selfCancel && existing.status !== "Pending") return Response.json({ error: "Only pending leave can be cancelled" }, { status: 409 });
+    if (actor.role === "STAFF" && !selfCancel) return Response.json({ error: "Staff can only cancel their own pending leave" }, { status: 403 });
     if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR" && !selfCancel) return Response.json({ error: "Insufficient permissions" }, { status: 403 });
+    if (!selfCancel && parsed.data.status === "Cancelled") return Response.json({ error: "Only the requesting staff member can cancel a leave request" }, { status: 403 });
+    if (existing.status !== "Pending") return Response.json({ error: "Only pending leave requests can be changed" }, { status: 409 });
 
     const updated = await prisma.$transaction(async (tx) => {
       const changed = await tx.leaveRequest.updateMany({
