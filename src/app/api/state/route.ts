@@ -215,10 +215,14 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
-  if (!decodeSession((await cookies()).get(COOKIE_NAME)?.value)) {
-    return Response.json({ error: "Authentication required" }, { status: 401 });
+  const session = decodeSession((await cookies()).get(COOKIE_NAME)?.value);
+  if (!session) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (session.role !== "ADMIN" && session.role !== "SUPERVISOR") {
+    return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
   }
-  const payload = await request.json() as StatePayload;
+  let payload: StatePayload;
+  try { payload = await request.json() as StatePayload; }
+  catch { return Response.json({ error: "Invalid state payload" }, { status: 400 }); }
   if (!payload.data || typeof payload.data !== "object") {
     return Response.json({ error: "Invalid state payload" }, { status: 400 });
   }
