@@ -74,7 +74,7 @@ export async function PATCH(request: Request) {
 
     const updated = await prisma.$transaction(async (tx) => {
       const changed = await tx.leaveRequest.updateMany({
-        where: { id: existing.id, status: existing.status },
+        where: { id: existing.id, status: "Pending" },
         data: { status: parsed.data.status, approvedBy: selfCancel ? null : actor.name, approvedAt: new Date(), comment: parsed.data.comment?.trim() || null },
       });
       if (changed.count !== 1) throw new Error("LEAVE_ALREADY_DECIDED");
