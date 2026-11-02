@@ -384,6 +384,7 @@ function computeSessionPayout(
 export async function POST_payment(req: Request) {
   const actor = sessionFromRequest(req);
   if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
 
   let raw: unknown;
   try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
@@ -540,6 +541,7 @@ const AdvanceSchema = z.object({
 export async function POST_advance(req: Request) {
   const actor = sessionFromRequest(req);
   if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
   let raw: unknown;
   try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
   const body = AdvanceSchema.safeParse(raw);
