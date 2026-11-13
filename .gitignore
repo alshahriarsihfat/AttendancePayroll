@@ -7,3 +7,4 @@ out/
 .vercel/
 package-lock.json
 yarn.lock
+.neon

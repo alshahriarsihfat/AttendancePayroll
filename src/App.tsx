@@ -19,7 +19,7 @@ import { AttendanceHub } from "./reference-pages/AttendanceHub";
 function Router() {
   const { view, role } = useApp();
   switch (view.page) {
-    case "dashboard": return <Dashboard />;
+    case "dashboard": return role === "SUPERVISOR" ? <AttendanceHub /> : <Dashboard />;
     case "monitor": return <Monitor />;
     case "staff": return <Staff />;
     // Admins keep the historical Attendance report; supervisors get the
@@ -32,7 +32,7 @@ function Router() {
     case "guide": return <Guide />;
     case "stafftime": return <StaffTime />;
     case "terminal": return <ClockTerminal />;
-    default: return <Dashboard />;
+    default: return role === "SUPERVISOR" ? <AttendanceHub /> : <Dashboard />;
   }
 }
 

@@ -26,11 +26,18 @@ import {
   dhakaTodayKey,
   nextShiftAt,
 } from "../lib/timeclock";
-import { formatBDT } from "../lib/currency";
+
 import { formatCountdown, formatDuration, formatElapsed, formatLongDate, formatMinSec, formatTime12 } from "../lib/dates";
 import { configValue } from "../lib/config";
 import { cn } from "../lib/utils";
 import type { ClockStatus, Employee } from "../types";
+
+function overtimeRunningLabel(sess: any, nowMs: number): string | null {
+  if (!sess?.overtimeActivatedAt || sess?.timeOut) return null;
+  const t = Date.parse(String(sess.overtimeActivatedAt));
+  if (!Number.isFinite(t)) return "OVERTIME RUNNING";
+  return `OVERTIME RUNNING · ${formatDuration(Math.max(0, (nowMs - t) / 60000))}`;
+}
 
 type StatusFilter = ClockStatus | "all" | "break";
 
@@ -50,6 +57,7 @@ export function AttendanceHub() {
   const now = useNow(1000);
 
   const [query, setQuery] = useState("");
+  const [otBusy, setOtBusy] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [clockingId, setClockingId] = useState<string | null>(null);
@@ -81,7 +89,6 @@ export function AttendanceHub() {
 
   const onBreak = BREAK_STATUSES.reduce((sum, k) => sum + (counts[k] ?? 0), 0);
   const lateCount = rows.filter((r) => r.calc.isLate).length;
-  const payNow = rows.reduce((sum, r) => sum + (r.status !== "off" && r.status !== "on-leave" && r.status !== "completed" ? r.calc.netPay : 0), 0);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -158,52 +165,83 @@ export function AttendanceHub() {
 
   return (
     <div className="space-y-5 animate-fade">
-      <HeroBand
-        eyebrow="Unified Attendance Terminal"
-        title="Attendance"
-        subtitle="Every active staff member on one live grid — click any card to slide open their shift controls (Clock In · Clock Out · Breaks · Go-Out · Extra Time) right in place."
-        icon="clock"
-        stats={[
-          { label: "On Duty", value: counts.working, icon: "users2" },
-          { label: "On Break", value: onBreak, icon: "coffee" },
-          { label: "On Leave", value: counts["on-leave"], icon: "calendar" },
-          { label: "Late Today", value: lateCount, icon: "alert" },
-        ]}
-        right={
-          <div className="flex items-end">
-            <div className="text-right">
-              <p className="text-2xl font-bold tabular-nums sm:text-3xl">{formatTime12(new Date(now).toISOString())}</p>
-              <p className="mt-0.5 text-xs text-faint-foreground">{formatLongDate(now)}</p>
-              <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-400/30">
-                <Icon name="handCoin" size={12} /> Pay now · {formatBDT(payNow, false)}
+      <Card className="overflow-hidden border-primary/15 bg-linear-to-r from-slate-900 via-slate-900 to-slate-800 text-white ring-1 ring-white/10">
+        <div className="flex flex-col gap-3 p-4 sm:p-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-primary-bright">
+                <Icon name="clock" size={13} /> Unified Attendance Terminal
+              </p>
+              <h2 className="mt-0.5 text-xl font-extrabold tracking-tight sm:text-2xl">Attendance</h2>
+              <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-300 sm:text-sm">
+                Live staff grid — select a card to manage Clock In/Out, breaks, go-out, and extra time in place.
               </p>
             </div>
+            <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+              <div className="text-left sm:text-right">
+                <p className="text-xl font-bold tabular-nums sm:text-2xl">{formatTime12(new Date(now).toISOString())}</p>
+                <p className="text-[11px] text-slate-400">{formatLongDate(now)}</p>
+              </div>
+            </div>
           </div>
-        }
-        actions={
-          <>
-            <button
-              onClick={() => session?.staffId && toggleExpand(session.staffId)}
-              className="inline-flex items-center gap-2 rounded-full bg-linear-to-r from-primary-deep to-primary-bright px-4 py-2 text-sm font-bold text-white shadow-md shadow-primary/30 transition hover:from-primary hover:to-primary-bright"
-            >
-              <Icon name="timer" size={16} /> My Clock
-            </button>
-            <button
-              onClick={() => void refreshData()}
-              className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-inset ring-white/20 transition hover:bg-white/20"
-            >
-              <Icon name="refresh" size={16} /> Refresh
-            </button>
-            <button
-              onClick={() => navigate("monitor")}
-              className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-inset ring-white/20 transition hover:bg-white/20"
-            >
-              <Icon name="store" size={16} /> Live Floor
-            </button>
-          </>
-        }
-      />
-{/* ---- search + status filter ---- */}
+
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => session?.staffId && toggleExpand(session.staffId)}
+                className="inline-flex h-10 min-w-[7.5rem] items-center justify-center gap-2 rounded-xl bg-linear-to-r from-primary-deep to-primary-bright px-4 text-sm font-semibold text-white shadow-md shadow-primary/30 ring-1 ring-inset ring-white/10 transition hover:from-primary hover:to-primary-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-bright/60"
+              >
+                <Icon name="timer" size={16} className="shrink-0" />
+                <span className="leading-none">My Clock</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshData()}
+                title="Refresh attendance data from server"
+                className="inline-flex h-10 min-w-[7.5rem] items-center justify-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-semibold text-white ring-1 ring-inset ring-white/20 transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+              >
+                <Icon name="refresh" size={16} className="shrink-0" />
+                <span className="leading-none">Refresh</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("monitor")}
+                className="inline-flex h-10 min-w-[7.5rem] items-center justify-center gap-2 rounded-xl bg-white/10 px-4 text-sm font-semibold text-white ring-1 ring-inset ring-white/20 transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+              >
+                <Icon name="store" size={16} className="shrink-0" />
+                <span className="leading-none">Live Floor</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("payments")}
+                className="inline-flex h-10 min-w-[7.5rem] items-center justify-center gap-2 rounded-xl bg-emerald-500/20 px-4 text-sm font-semibold text-emerald-50 ring-1 ring-inset ring-emerald-300/30 transition hover:bg-emerald-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/50"
+              >
+                <Icon name="receipt" size={16} className="shrink-0" />
+                <span className="leading-none">Payroll</span>
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+              <span className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-white/10 px-3 text-xs font-semibold ring-1 ring-inset ring-white/15"><span className="text-slate-300">On Duty</span> <span className="tabular-nums text-white">{counts.working}</span></span>
+              <span className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-white/10 px-3 text-xs font-semibold ring-1 ring-inset ring-white/15"><span className="text-slate-300">On Break</span> <span className="tabular-nums text-white">{onBreak}</span></span>
+              <span className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-white/10 px-3 text-xs font-semibold ring-1 ring-inset ring-white/15"><span className="text-slate-300">On Leave</span> <span className="tabular-nums text-white">{counts["on-leave"]}</span></span>
+              <span className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-white/10 px-3 text-xs font-semibold ring-1 ring-inset ring-white/15"><span className="text-slate-300">Late</span> <span className="tabular-nums text-white">{lateCount}</span></span>
+            </div>
+          </div>
+        </div>
+      </Card>
+      {(session?.role === "ADMIN" || session?.role === "SUPERVISOR") && (
+        <div className="rounded-2xl border border-edge bg-surface p-4">
+          <h3 className="mb-2 text-sm font-bold">Overtime (Supervisor-Authorized Extra Time)</h3>
+          {data.sessions.filter((s) => !!s.overtimeActivatedAt && !s.timeOut).map((s) => (
+            <div key={s.id} className="mb-2 flex items-center justify-between gap-2 text-xs">
+              <span>{s.staffId} · {s.date} · <span className="font-semibold text-emerald-700 dark:text-emerald-300">{overtimeRunningLabel(s, now) || "OVERTIME RUNNING"}</span></span>
+              <span className="text-muted-foreground">Ends on manual clock-out</span>
+            </div>
+          ))}
+          {data.sessions.filter((s) => !!s.overtimeActivatedAt && !s.timeOut).length === 0 && <p className="text-xs text-muted-foreground">No overtime running. Activate Extra Time after duty end to start supervisor-authorized overtime.</p>}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative min-w-0 flex-1 sm:max-w-xs">
           <Icon name="search" size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint-foreground" />
@@ -357,10 +395,7 @@ function AttendanceCard({ staff, sess, calc, status, now, expanded, isSelf, canC
               {leave ? "Away" : off ? "Not in" : done ? formatDuration(calc.grossMin) : onBreak ? formatCountdown(Math.abs(calc.activeElapsedSec)) : formatElapsed(elapsedMs)}
             </p>
           </div>
-          <div className="shrink-0 text-right">
-            <p className="text-[10px] font-medium uppercase tracking-wide text-faint-foreground">{done || off || leave ? "Earned" : "Pay · est."}</p>
-            <p className="truncate text-sm font-bold tabular-nums text-emerald-600">{formatBDT(calc.netPay, false)}</p>
-          </div>
+
         </div>
 
         {/* footer: in/out + late + CTA */}
@@ -484,6 +519,31 @@ function InlineShiftPanel({ staff, sess, calc, status, now, canClockIn, clocking
     }
   };
 
+  const activateOvertime = async (staffId: string) => {
+    if (busy) return;
+    const session = data.sessions.find((s) => s.staffId === staffId && !s.timeOut);
+    if (!session) { toast("No active session.", "error"); return; }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/overtime/activate", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
+      if (!res.ok) {
+        let msg = "Overtime activation failed.";
+        try { const p = await res.json(); if (p?.error) msg = p.error; } catch { /* ignore */ }
+        toast(msg, "error");
+        return;
+      }
+      await refreshData();
+      toast("Overtime activated.", "success");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doClockOut = async () => {
     if (busy) return;
     setBusy(true);
@@ -507,17 +567,18 @@ function InlineShiftPanel({ staff, sess, calc, status, now, canClockIn, clocking
       {/* mini shift summary */}
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
-          <Icon name="clock" size={13} className="text-primary" /> Shift {shift.startTime}–{shift.endTime}
+          <Icon name="clock" size={13} className="text-primary" /> Shift {shift.startTime}â€“{shift.endTime}
         </span>
-        <span className="tabular-nums font-semibold text-emerald-600">{formatBDT(calc.netPay, false)} est.</span>
+        {sess?.overtimeActivatedAt && !sess?.timeOut && <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/25">{overtimeRunningLabel(sess, now) || "OVERTIME RUNNING"}</span>}
+        {sess?.overtimeActivatedAt && sess?.timeOut && <span className="inline-flex items-center rounded-full bg-surface-muted px-2 py-0.5 font-bold text-muted-foreground ring-1 ring-inset ring-edge">OVERTIME ENDED · {formatDuration(calc.overtimeMin)}</span>}
       </div>
 
       {sess && (
         <div className="grid grid-cols-2 gap-2 rounded-xl bg-surface px-3 py-2 ring-1 ring-inset ring-edge sm:grid-cols-4">
           <MiniStat label="Worked" value={formatDuration(calc.grossMin)} />
           <MiniStat label="Break" value={formatDuration(calc.breakMin)} />
-          <MiniStat label="Over-break" value={calc.overBreakMin > 0 ? formatDuration(calc.overBreakMin) : "—"} />
-          <MiniStat label="Overtime" value={calc.overtimeMin > 0 ? formatDuration(calc.overtimeMin) : "—"} />
+          <MiniStat label="Over-break" value={calc.overBreakMin > 0 ? formatDuration(calc.overBreakMin) : "â€”"} />
+          <MiniStat label={sess.overtimeActivatedAt && !sess.timeOut ? "OT (running)" : "Overtime"} value={calc.overtimeMin > 0 ? formatDuration(calc.overtimeMin) : "â€”"} />
         </div>
       )}
 
@@ -527,7 +588,7 @@ function InlineShiftPanel({ staff, sess, calc, status, now, canClockIn, clocking
             {status === "on-goout"
               ? calc.activeGoOutReason ?? "On paid go-out"
               : status === "on-unpaid"
-                ? "Unpaid break — salary deducting"
+                ? "Unpaid break"
                 : calc.poolsExhausted
                   ? "Paid break exhausted — deducting"
                   : `${formatMinSec(calc.mealRemaining)} meal · ${formatMinSec(calc.restRemaining)} rest left`}
@@ -588,20 +649,35 @@ function InlineShiftPanel({ staff, sess, calc, status, now, canClockIn, clocking
             <Icon name="arrowRight" size={15} /> Paid Go-Out
             <span className="text-[10px] font-normal opacity-90">field work · no deduction</span>
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void withRefresh(() => toggleExtraTime(staff.employeeId))}
-            className={cn(
-              "flex w-full items-center justify-between rounded-xl border-2 px-3 py-2 text-xs font-bold transition active:scale-[0.99] disabled:opacity-60",
-              calc.extraTimeActive ? "border-primary bg-primary-soft text-primary" : "border-edge bg-surface text-muted-foreground hover:bg-surface-muted"
-            )}
-          >
-            <span className="flex items-center gap-2"><Icon name="trendUp" size={15} /> Extra Time</span>
-            <span className={cn("relative h-5 w-10 rounded-full transition", calc.extraTimeActive ? "bg-primary" : "bg-white/25")}>
-              <span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow transition-all", calc.extraTimeActive ? "left-[22px]" : "left-0.5")} />
-            </span>
-          </button>
+            {(() => {
+              const activeSession = data.sessions.find((s) => s.staffId === staff.employeeId && !s.timeOut);
+              const shiftEndMin = activeSession?.shiftEndMin ?? null;
+              const activated = !!activeSession?.overtimeActivatedAt;
+              const nowDate = new Date(now);
+              const nowMin = nowDate.getHours() * 60 + nowDate.getMinutes();
+              const beforeEnd = shiftEndMin !== null && nowMin < shiftEndMin;
+              const disabled = busy || beforeEnd || activated || shiftEndMin === null;
+              const running = overtimeRunningLabel(activeSession, now);
+              const label = activated
+                ? (running || "OVERTIME RUNNING")
+                : beforeEnd
+                ? "Extra Time (after duty end)"
+                : "Activate Extra Time";
+              return (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => void activateOvertime(staff.employeeId)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-xl border-2 px-3 py-2 text-xs font-bold transition active:scale-[0.99] disabled:opacity-60",
+                    activated ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-edge bg-surface text-muted-foreground hover:bg-surface-muted"
+                  )}
+                >
+                  <span className="flex items-center gap-2"><Icon name="trendUp" size={15} /> {label}</span>
+                  {activated && <span className="text-[10px] font-semibold">Ends on manual clock-out</span>}
+                </button>
+              );
+            })()}
         </>
       )}
 
@@ -626,7 +702,7 @@ function InlineShiftPanel({ staff, sess, calc, status, now, canClockIn, clocking
           onClick={() => setOutConfirm(true)}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 py-2.5 text-sm font-bold text-white transition hover:bg-slate-900 active:scale-[0.99] disabled:opacity-60"
         >
-          <Icon name="power" size={16} /> {busy ? "Processing..." : "Clock Out"}
+          <Icon name="power" size={16} /> {busy ? "Processing..." : (sess?.overtimeActivatedAt ? "Clock Out (End Overtime)" : "Clock Out")}
         </button>
       )}
 {status === "on-leave" && (

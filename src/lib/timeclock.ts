@@ -4,6 +4,7 @@ import type {
 import { configNumber, configValue } from "./config";
 import { minutesBetween } from "./dates";
 import { payRound } from "./currency";
+import { computeCanonical } from "./payroll-session";
 
 // ============================================================================
 // Time-clock calculation engine — DETERMINISTIC & auditable.
@@ -56,19 +57,15 @@ export function isWithinIndividualShiftWindow(
 ): boolean {
   const minutes = getDhakaMinutes(date);
   const earlyCheckinMin = configNumber(config, "EARLY_CHECKIN_MINUTES", 5);
+  // Early clock-in allowed up to exactly configured grace before scheduled Duty Start.
+  // Pre-duty minutes are not payable (canonical payroll calc enforces payable start at scheduled Duty Start).
   const shiftStartWithGrace = shift.startMin - earlyCheckinMin;
-  
+
   // Overnight shift: endMin < startMin (e.g., 22:00 to 06:00 means 1320 to 360)
-  // Window active when: currentMinutes >= startWithGrace OR currentMinutes <= endMin
-  // Same-day shift: startMin < endMin
-  // Window active when: currentMinutes >= startWithGrace AND currentMinutes <= endMin
   if (shiftStartWithGrace <= shift.endMin) {
-    // Same-day shift
     return minutes >= shiftStartWithGrace && minutes <= shift.endMin;
-  } else {
-    // Overnight shift (spans midnight)
-    return minutes >= shiftStartWithGrace || minutes <= shift.endMin;
   }
+  return minutes >= shiftStartWithGrace || minutes <= shift.endMin;
 }
 
 /** An employee's resolved shift params. */
@@ -95,8 +92,8 @@ export function empShift(emp: Pick<Employee, "shiftStart" | "shiftEnd" | "mealBr
 }
 
 /** Resolve a staff member's effective basic hourly BDT rate. */
-export function hourlyRateFor(staff: Pick<Employee, "salaryType" | "hourlyRate" | "dailyRate" | "baseSalary">, shift: EmpShift): number {
-  const duty = shift.regularHours || 8;
+export function hourlyRateFor(staff: Pick<Employee, "salaryType" | "hourlyRate" | "dailyRate" | "baseSalary" | "dailyDutyHours">, shift: EmpShift): number {
+  const duty = staff.dailyDutyHours && staff.dailyDutyHours > 0 ? staff.dailyDutyHours : (shift.regularHours || 8);
   switch (staff.salaryType) {
     case "Hourly": return staff.hourlyRate || 0;
     case "Daily": return (staff.dailyRate || 0) / duty;
@@ -211,6 +208,7 @@ export interface SessionComputation {
   poolsExhausted: boolean; // true when meal+rest hit the 45m ceiling
   overBreakMin: number;    // paid-break overage beyond 45m + unpaid minutes (deducted)
   overtimeMin: number;     // time past shiftEnd (extra pay)
+  payableOvertimeMin: number;
   hourlyRate: number;      // basic prorated rate
   overtimeRate: number;    // basic × multiplier
   grossPay: number;        // basic pay (clocked, minus over-break)
@@ -234,96 +232,36 @@ export function computeSession(
   config: ConfigEntry[],
   now: number
 ): SessionComputation {
-  // The shift used to judge this session: prefer the snapshot captured at
-  // clock-in (historical fidelity) over the employee's LIVE assignment, so a
-  // shift edit never retroactively rewrites past attendance/pay figures.
-  const shift = shiftForSession(staff, session);
-  const mealAllow = staff.mealBreakMin || configNumber(config, "MEAL_BREAK_MINUTES", 30);
-  const restAllow = staff.restMin || configNumber(config, "REST_BREAK_MINUTES", 15);
-  const otMult = configNumber(config, "OVERTIME_MULTIPLIER", 1.25);
-  const rate = hourlyRateFor(staff, shift);
-  const overtimeRate = rate * otMult;
-
+  const c = computeCanonical({ session, staff, config, now });
   if (!session) {
     return {
       clockStatus: "off", grossMin: 0, breakMin: 0, mealMin: 0, restMin: 0, unpaidMin: 0,
-      paidMealAllow: mealAllow, paidRestAllow: restAllow, totalPaidAllow: mealAllow + restAllow,
-      mealRemaining: mealAllow, restRemaining: restAllow, poolsExhausted: false,
-      overBreakMin: 0, overtimeMin: 0,
-      hourlyRate: rate, overtimeRate, grossPay: 0, overBreakDeduction: 0, overtimePay: 0, netPay: 0,
+      paidMealAllow: c.paidMealAllow, paidRestAllow: c.paidRestAllow, totalPaidAllow: c.totalPaidAllow,
+      mealRemaining: c.mealRemaining, restRemaining: c.restRemaining, poolsExhausted: false,
+      overBreakMin: 0, overtimeMin: 0, payableOvertimeMin: 0,
+      hourlyRate: c.hourlyRate, overtimeRate: c.overtimeRate, grossPay: 0, overBreakDeduction: 0, overtimePay: 0, netPay: 0,
       breakRemainingSec: 0, isOngoing: false, lateMin: 0, isLate: false,
       extraTimeMin: 0, extraTimeActive: false,
       goOutMin: 0, activeGoOutReason: null, activeElapsedSec: 0,
     };
   }
-
-  const endMs = session.timeOut ? new Date(session.timeOut).getTime() : now;
-  const grossMin = Math.max(0, minutesBetween(session.timeIn, new Date(endMs).toISOString()));
   const bt = breakTotals(session, now);
-
-  // ---- Dual-pool break engine ---------------------------------------------
-  const totalPaidAllow = mealAllow + restAllow;
-  const totalPaidBreaks = bt.mealMin + bt.restMin;       
-  const poolOverrun = Math.max(0, totalPaidBreaks - totalPaidAllow); 
-  const overBreakMin = poolOverrun + bt.unpaidMin;        
-  const poolsExhausted = totalPaidBreaks >= totalPaidAllow;
-
-  const mealOver = Math.max(0, bt.mealMin - mealAllow);
-  const mealRemaining = Math.max(0, mealAllow - bt.mealMin);
-  const restRemaining = Math.max(0, restAllow - bt.restMin - mealOver);
-
-  // Overtime calculation with safe guard against pre-shift overtime.
-  // Bounds are shift-aware (overnight shifts) and derived from the session's
-  // snapshotted shift so a past session is judged against the shift that was
-  // active at the time — never today's live assignment.
-  const { start: schedStart, end: schedEnd } = scheduledShiftBounds(session.timeIn, shift);
-  const timeInMs = new Date(session.timeIn).getTime();
-  
-  const autoOvertimeMin = endMs > schedEnd && endMs > timeInMs ? Math.round((endMs - schedEnd) / 60000) : 0;
-
-  // Manual "Extra Time" segments
-  let extraTimeMin = 0, extraTimeActive = false;
-  for (const et of session.extraTime ?? []) {
-    const endISO = et.end ?? new Date(now).toISOString();
-    extraTimeMin += minutesBetween(et.start, endISO);
-    if (!et.end) extraTimeActive = true;
-  }
-  const overtimeMin = autoOvertimeMin + extraTimeMin;
-
-  // Late detection vs shift start
-  const lateMin = timeInMs > schedStart && Math.abs(timeInMs - schedStart) < 12 * 60 * 60000
-    ? Math.round((timeInMs - schedStart) / 60000) : 0;
-
-  // Pay calculation
-  const basicMin = Math.max(0, grossMin - overtimeMin);
-  const grossPay = rate * (basicMin / 60);
-  const overBreakDeduction = rate * (overBreakMin / 60);
-  const overtimePay = overtimeRate * (overtimeMin / 60);
-  const netPay = grossPay - overBreakDeduction + overtimePay;
-
-  // ---- Paid Go-Out (field work) -------------------------------------------
+  // Go-out
   let goOutMin = 0, activeGoOutReason: string | null = null, activeGoOutStart: number | null = null;
   for (const g of session.goOuts ?? []) {
     const endISO = g.end ?? new Date(now).toISOString();
     goOutMin += minutesBetween(g.start, endISO);
     if (!g.end) { activeGoOutReason = g.reason; activeGoOutStart = new Date(g.start).getTime(); }
   }
-
   // Active break countdown
-  let breakRemainingSec = 0;
-  let activeElapsedSec = 0;
+  let breakRemainingSec = 0, activeElapsedSec = 0;
   if (bt.activeBreak) {
     activeElapsedSec = Math.max(0, (now - new Date(bt.activeBreak.start).getTime()) / 1000);
-    if (bt.activeBreak.type === "unpaid") {
-      breakRemainingSec = -activeElapsedSec; 
-    } else {
-      breakRemainingSec = (totalPaidAllow - totalPaidBreaks) * 60;
-    }
+    breakRemainingSec = bt.activeBreak.type === "unpaid" ? -activeElapsedSec : (c.totalPaidAllow - (bt.mealMin + bt.restMin)) * 60;
   } else if (activeGoOutStart !== null) {
     activeElapsedSec = Math.max(0, (now - activeGoOutStart) / 1000);
     breakRemainingSec = -activeElapsedSec;
   }
-
   let clockStatus: ClockStatus;
   if (session.timeOut || session.completed) clockStatus = "completed";
   else if (bt.activeBreak?.type === "meal") clockStatus = "on-meal";
@@ -331,37 +269,23 @@ export function computeSession(
   else if (bt.activeBreak?.type === "unpaid") clockStatus = "on-unpaid";
   else if (activeGoOutStart !== null) clockStatus = "on-goout";
   else clockStatus = "working";
-
   return {
     clockStatus,
-    grossMin,
+    grossMin: c.grossMin,
     breakMin: bt.breakMin,
-    mealMin: bt.mealMin,
-    restMin: bt.restMin,
-    unpaidMin: bt.unpaidMin,
-    paidMealAllow: mealAllow,
-    paidRestAllow: restAllow,
-    totalPaidAllow,
-    mealRemaining,
-    restRemaining,
-    poolsExhausted,
-    overBreakMin,
-    overtimeMin,
-    hourlyRate: rate,
-    overtimeRate,
-    grossPay: payRound(grossPay),
-    overBreakDeduction: payRound(overBreakDeduction),
-    overtimePay: payRound(overtimePay),
-    netPay: payRound(Math.max(0, netPay)),
+    mealMin: bt.mealMin, restMin: bt.restMin, unpaidMin: bt.unpaidMin,
+    paidMealAllow: c.paidMealAllow, paidRestAllow: c.paidRestAllow, totalPaidAllow: c.totalPaidAllow,
+    mealRemaining: c.mealRemaining, restRemaining: c.restRemaining, poolsExhausted: c.poolsExhausted,
+    overBreakMin: c.overBreakMin,
+    overtimeMin: c.overtimeMin, payableOvertimeMin: c.payableOvertimeMin,
+    hourlyRate: c.hourlyRate, overtimeRate: c.overtimeRate,
+    grossPay: c.grossPay, overBreakDeduction: c.overBreakDeduction, overtimePay: c.overtimePay, netPay: c.netPay,
     breakRemainingSec,
     isOngoing: !session.timeOut,
-    lateMin,
-    isLate: lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10),
-    extraTimeMin,
-    extraTimeActive,
-    goOutMin,
-    activeGoOutReason,
-    activeElapsedSec,
+    lateMin: c.lateMin, isLate: c.isLate,
+    extraTimeMin: c.extraTimeMin,
+    extraTimeActive: (session.extraTime ?? []).some((et) => !et.end),
+    goOutMin, activeGoOutReason, activeElapsedSec,
   };
 }
 

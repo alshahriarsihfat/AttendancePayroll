@@ -21,9 +21,17 @@ async function ensureConfig() {
   return prisma.config.findMany({ orderBy: { key: "asc" } });
 }
 
-export async function GET() {
+const SENSITIVE_CONFIG_KEY = /(KEY|SECRET|TOKEN|PASSWORD|API_URL)/i;
+
+export async function GET(request: Request) {
+  const session = sessionFromRequest(request);
+  if (!session) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
-    return Response.json({ config: await ensureConfig() });
+    const config = await ensureConfig();
+    const visible = session.role === "ADMIN"
+      ? config
+      : config.filter((entry) => !SENSITIVE_CONFIG_KEY.test(entry.key));
+    return Response.json({ config: visible });
   } catch (error) {
     return dbErrorResponse(error);
   }
@@ -32,7 +40,9 @@ export async function GET() {
 const ConfigUpdate = z.object({ key: z.string().min(1), value: z.string() });
 
 export async function PUT(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = ConfigUpdate.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid config payload" }, { status: 400 });
   try {

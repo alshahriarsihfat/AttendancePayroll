@@ -19,6 +19,9 @@ export function validateStaff(
   opts: { existingIds?: string[]; existingUsernames?: string[]; selfUsername?: string; isUpdate?: boolean } = {}
 ): FieldError[] {
   const errors: FieldError[] = [];
+  const st = s.salaryType;
+  const duty = s.dailyDutyHours;
+
   if (!s.fullName || !isNonEmpty(s.fullName)) errors.push({ field: "fullName", message: "Full name is required." });
   if (!s.employeeId || !isEmployeeId(s.employeeId || "")) errors.push({ field: "employeeId", message: "ID must be KP98 + 2 digits (e.g. KP9820)." });
   // Manual credentials — username always required; password required on CREATE
@@ -31,11 +34,16 @@ export function validateStaff(
   if (!s.department) errors.push({ field: "department", message: "Department is required." });
   if (!s.jobTitle || !isNonEmpty(s.jobTitle || "")) errors.push({ field: "jobTitle", message: "Designation is required." });
   if (!s.joinDate || !isISODate(s.joinDate || "")) errors.push({ field: "joinDate", message: "Join date is required (YYYY-MM-DD)." });
-  if (!s.salaryType) errors.push({ field: "salaryType", message: "Select a salary type." });
-  if (s.salaryType === "Monthly" && !isPositive(Number(s.baseSalary))) errors.push({ field: "baseSalary", message: "Monthly salary is required." });
-  if (s.salaryType === "Weekly" && !isPositive(Number(s.baseSalary))) errors.push({ field: "baseSalary", message: "Weekly salary is required." });
-  if (s.salaryType === "Daily" && !isPositive(Number(s.dailyRate))) errors.push({ field: "dailyRate", message: "Daily rate is required." });
-  if (s.salaryType === "Hourly" && !isPositive(Number(s.hourlyRate))) errors.push({ field: "hourlyRate", message: "Hourly rate is required." });
+  if (!st) errors.push({ field: "salaryType", message: "Select a salary type." });
+
+  // 2C.6.2: single configured hourly rate for active earning calculation (all salary types are labels).
+  if (!(typeof s.hourlyRate === "number" && Number.isFinite(s.hourlyRate) && s.hourlyRate > 0)) {
+    errors.push({ field: "hourlyRate", message: "Hourly rate must be greater than 0." });
+  }
+  if (!(typeof duty === "number" && Number.isFinite(duty) && duty > 0)) {
+    errors.push({ field: "dailyDutyHours", message: "Daily duty hours are required (no default/fallback assumed)." });
+  }
+
   if (!s.shiftStart) errors.push({ field: "shiftStart", message: "Shift start time is required." });
   if (!s.shiftEnd) errors.push({ field: "shiftEnd", message: "Shift end time is required." });
 

@@ -9,8 +9,11 @@ const secureCookie = (request: Request) => new URL(request.url).protocol === "ht
 
 function adminUsername(): string {
   const u = process.env.ADMIN_USERNAME;
-  if (!u && process.env.NODE_ENV === "production") throw new Error("ADMIN_USERNAME is required in production");
-  return u ?? "admin";
+  if (!u) {
+    if (process.env.NODE_ENV === "production") throw new Error("ADMIN_USERNAME is required in production");
+    return "";
+  }
+  return u.trim().toLowerCase();
 }
 
 function adminPasswordHash(): string {

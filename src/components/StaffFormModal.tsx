@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Modal } from "./Modal";
 import { Button, Field, Input, Select, Divider } from "./ui";
@@ -11,7 +11,9 @@ const EMPTY: Partial<Employee> = {
   fullName: "", employeeId: "", username: "", password: "", email: "", phone: "", department: "Pharmacy Counter",
   jobTitle: "", section: "Sales Floor", counter: 1, joinDate: "", role: "STAFF",
   salaryType: "Daily", baseSalary: 0, dailyRate: 0, hourlyRate: 0,
-  shiftStart: "09:00 AM", shiftEnd: "08:00 PM", mealBreakMin: 30, restMin: 15, shiftId: "SH-FULL", photoUrl: "",
+  dailyDutyHours: undefined, workingDaysPerWeek: undefined,
+  shiftStart: "09:00 AM", shiftEnd: "08:00 PM", mealBreakMin: 30, restMin: 15, photoUrl: "",
+  status: "Active", isActive: true, arrears: 0, advance: 0,
 };
 const SALARY: SalaryType[] = ["Daily", "Weekly", "Monthly", "Hourly"];
 const PHARMA = "Pharmacy Counter";
@@ -23,12 +25,9 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
 
   useEffect(() => {
     if (editing) {
-      // NEVER pre-fill the stored password on edit. A blank field means
-      // "keep the current password unchanged" — so unrelated corrections
-      // (phone, shift, salary…) are never blocked by a password requirement.
       setForm({ ...editing, password: "" });
     }
-    else {
+  else {
       // suggest the next available KP98 id + matching default username/password
       const ids = data.staff.map((s) => s.employeeId);
       const id = nextId(ids);
@@ -39,22 +38,23 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
   const set = (k: keyof Employee, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
   const isPharma = form.department === PHARMA;
 
-  const applyShift = (id: string) => {
-    const t = data.shifts.find((s) => s.id === id);
-    if (t) setForm((f) => ({ ...f, shiftId: id, shiftStart: t.startTime, shiftEnd: t.endTime, mealBreakMin: t.mealBreakMin, restMin: t.restMin }));
-  };
-
-  const submit = () => {
+  const submit = async () => {
+    const dutyRaw = form.dailyDutyHours as any;
     const payload: Partial<Employee> = {
       ...form,
+      // Legacy DB columns preserved but not used for active earning derivation (2C.6.2).
       baseSalary: Number(form.baseSalary) || 0, dailyRate: Number(form.dailyRate) || 0,
       hourlyRate: Number(form.hourlyRate) || 0, mealBreakMin: Number(form.mealBreakMin) || 30,
       restMin: Number(form.restMin) || 15, counter: isPharma ? (form.counter ?? null) : null,
+      dailyDutyHours: dutyRaw === "" || dutyRaw == null ? undefined : Number(dutyRaw),
+      workingDaysPerWeek: form.workingDaysPerWeek == null ? undefined : Number(form.workingDaysPerWeek),
+      status: form.status ?? "Active",
+      isActive: form.isActive ?? true,
     };
     // On edit a blank password is a no-op: omit it so the existing login
     // password is kept exactly as-is (the server never re-hashes an empty string).
     if (editing && !payload.password) delete payload.password;
-    const res = editing ? updateStaff(editing.employeeId, payload) : createStaff(payload);
+    const res = editing ? await updateStaff(editing.employeeId, payload) : await createStaff(payload);
     if (!res.ok) { const m: Record<string, string> = {}; (res.errors as FieldError[] | undefined)?.forEach((e) => (m[e.field] = e.message)); setErrors(m); }
     else onClose();
   };
@@ -78,7 +78,7 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
             <Input value={form.fullName} onChange={(e) => set("fullName", e.target.value)} placeholder="e.g. Rahim Uddin" />
           </Field>
           <Field label="Staff ID" required error={errors.employeeId} hint="Internal record id (e.g. KP9830).">
-            <Input value={form.employeeId} onChange={(e) => set("employeeId", e.target.value.toUpperCase())} placeholder="KP9830" />
+            <Input value={form.employeeId} onChange={(e) => set("employeeId", e.target.value.toUpperCase())} placeholder="KP9830" disabled={!!editing} />
           </Field>
           <Field label="Phone" required error={errors.phone}><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+8801XXXXXXXXX" /></Field>
           <Field label="Email" error={errors.email} hint="Optional"><Input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="name@khanpharma.bd" /></Field>
@@ -115,6 +115,23 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
               </Select>
             </Field>
             <Field label="Section"><Input value={form.section} onChange={(e) => set("section", e.target.value)} placeholder="e.g. Sales Floor" /></Field>
+            {editing && (
+              <>
+                <Field label="Employment Status">
+                  <Select value={form.status ?? "Active"} onChange={(e) => set("status", e.target.value as any)}>
+                    <option value="Active">Active</option>
+                    <option value="On-leave">On leave</option>
+                    <option value="Terminated">Terminated</option>
+                  </Select>
+                </Field>
+                <Field label="Account Active" hint="Inactive staff cannot authenticate.">
+                  <Select value={String(form.isActive ?? true)} onChange={(e) => set("isActive", e.target.value === "true")}>
+                    <option value="true">Active (can sign in)</option>
+                    <option value="false">Inactive (cannot sign in)</option>
+                  </Select>
+                </Field>
+              </>
+            )}
           </div>
 
           {/* Counter config box — only for Pharmacy Counter */}
@@ -129,8 +146,8 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
                     {n}
                   </button>
                 ))}
-              </div>
-              {form.counter && <button type="button" onClick={() => set("counter", null)} className="mt-2 text-xs font-medium text-faint-foreground hover:text-rose-500">Clear counter</button>}
+           </div>
+             {form.counter && <button type="button" onClick={() => set("counter", null)} className="mt-2 text-xs font-medium text-faint-foreground hover:text-rose-500">Clear counter</button>}
             </div>
           )}
         </div>
@@ -139,11 +156,6 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
         <div>
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Shift Hours ({form.shiftStart || "..:.."} – {form.shiftEnd || "..:.."})</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Shift Template" hint="Pick to pre-fill the preset hours, then customize below.">
-              <Select value={form.shiftId} onChange={(e) => applyShift(e.target.value)}>
-                {data.shifts.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </Select>
-            </Field>
             <Field label="Join Date" required error={errors.joinDate}><Input type="date" value={form.joinDate} onChange={(e) => set("joinDate", e.target.value)} /></Field>
             <Field label="Shift Start" required error={errors.shiftStart}><Input value={form.shiftStart} onChange={(e) => set("shiftStart", e.target.value)} placeholder="09:00 AM" /></Field>
             <Field label="Shift End" required error={errors.shiftEnd}><Input value={form.shiftEnd} onChange={(e) => set("shiftEnd", e.target.value)} placeholder="08:00 PM" /></Field>
@@ -154,18 +166,25 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
 
         <Divider />
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Salary Structure <span className="font-normal text-faint-foreground">(hidden from staff role)</span></p>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Salary Type" required error={errors.salaryType}>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Salary Configuration <span className="font-normal text-faint-foreground">(hidden from staff role)</span></p>
+          <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+            Approved policy: Earned Salary = Approved Payable Hours × Configured Hourly Rate. Daily, Weekly, and Monthly are display/summary labels only (not separate earning/payment-cycle engines). Configure Hourly Rate and Daily Duty Hours directly; missing required config stays INCOMPLETE (no /30, /7, calendar-month, or 8h/shift fallback).
+          </div>
+          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Salary Type (label)" required error={errors.salaryType}>
               <Select value={form.salaryType} onChange={(e) => set("salaryType", e.target.value as SalaryType)}>
                 {SALARY.map((t) => <option key={t} value={t}>{t}</option>)}
               </Select>
             </Field>
-            {(form.salaryType === "Monthly" || form.salaryType === "Weekly") && (
-              <Field label={`${form.salaryType} Salary (৳)`} required error={errors.baseSalary}><Input type="number" value={form.baseSalary} onChange={(e) => set("baseSalary", e.target.value)} /></Field>
-            )}
-            {form.salaryType === "Daily" && <Field label="Daily Rate (৳)" required error={errors.dailyRate}><Input type="number" value={form.dailyRate} onChange={(e) => set("dailyRate", e.target.value)} /></Field>}
-            {form.salaryType === "Hourly" && <Field label="Hourly Rate (৳)" required error={errors.hourlyRate}><Input type="number" value={form.hourlyRate} onChange={(e) => set("hourlyRate", e.target.value)} /></Field>}
+            <Field label="Hourly Rate (৳)" required error={errors.hourlyRate} hint="Required for active earning calculation.">
+              <Input type="number" step="0.01" min="0" value={form.hourlyRate} onChange={(e) => set("hourlyRate", e.target.value)} />
+            </Field>
+            <Field label="Daily Duty Hours" required error={errors.dailyDutyHours} hint="Required. No default/fallback assumed.">
+              <Input type="number" step="0.25" min="0" value={form.dailyDutyHours ?? ""} onChange={(e) => set("dailyDutyHours", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="e.g. 8" />
+            </Field>
+            <div className="sm:col-span-2 rounded-lg bg-surface-muted/60 px-3 py-2 text-xs text-muted-foreground">
+              Legacy fields (base/daily rate, weekly working days) may remain in stored records/DB for compatibility but are not used to derive active earnings. Payments can be made any day (full or partial) after payable hours accrue.
+            </div>
           </div>
         </div>
       </div>
@@ -175,9 +194,15 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
 
 // next KP98 serial helper for the parent page
 export function nextSerial(existing: string[]): number {
-  const max = existing.reduce((m, id) => { const n = parseInt(id.replace(/\D/g, ""), 10); return Number.isFinite(n) ? Math.max(m, n) : m; }, 20);
-  return max + 1;
+  const used = new Set(existing.map((id) => { const m = id.match(/^KP98(\d{2})$/); return m ? m[1] : null; }).filter(Boolean));
+  for (let n = 1; n <= 99; n++) {
+    const s = String(n).padStart(2, "0");
+    if (!used.has(s)) return n;
+  }
+  return 100; // exhausted
 }
 export function nextId(existing: string[]): string {
-  return idFromSerial(nextSerial(existing));
+  const serial = nextSerial(existing);
+  if (serial > 99) return ""; // exhausted
+  return idFromSerial(serial);
 }

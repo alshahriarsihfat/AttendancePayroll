@@ -9,24 +9,20 @@ import { ThemeToggle } from "./ThemeToggle";
 interface NavItem { page: PageId; label: string; icon: IconName; perm: Permission; }
 
 const ADMIN_NAV: { label: string; items: NavItem[] }[] = [
-  { label: "Main", items: [
-    { page: "dashboard", label: "Dashboard", icon: "dashboard", perm: "manage.staff" },
-    { page: "staff", label: "Staff Management", icon: "users2", perm: "manage.staff" },
-    { page: "attendance", label: "Attendance Analytics", icon: "clock", perm: "view.attendance" },
-    { page: "leave", label: "Leave", icon: "calendar", perm: "manage.leave" },
-    { page: "payments", label: "Payments", icon: "receipt", perm: "pay.staff" },
-  ] },
-  { label: "System", items: [
-    { page: "settings", label: "Settings", icon: "settings", perm: "manage.config" },
-    { page: "guide", label: "Setup & Data", icon: "fileText", perm: "manage.config" },
+  { label: 'Main', items: [
+    { page: 'dashboard', label: 'Dashboard', icon: 'dashboard', perm: 'manage.staff' },
+    { page: 'staff', label: 'Staff Management', icon: 'users2', perm: 'manage.staff' },
+    { page: 'payments', label: 'Payroll', icon: 'receipt', perm: 'pay.staff' },
+    { page: 'attendance', label: 'Attendance Analytics', icon: 'clock', perm: 'view.attendance' },
+    { page: 'settings', label: 'Settings', icon: 'settings', perm: 'manage.config' },
   ] },
 ];
 
 const SUPERVISOR_NAV: NavItem[] = [
-  { page: "monitor", label: "Dashboard", icon: "dashboard", perm: "view.floor" },
-  { page: "attendance", label: "Live Attendance", icon: "clock", perm: "view.attendance" },
+  { page: "attendance", label: "Attendance", icon: "clock", perm: "view.attendance" },
+  { page: "monitor", label: "Live Floor", icon: "store", perm: "view.floor" },
+  { page: "payments", label: "Payroll", icon: "receipt", perm: "pay.staff" },
   { page: "leave", label: "Leave Management", icon: "calendar", perm: "manage.leave" },
-  { page: "payments", label: "Pay", icon: "receipt", perm: "pay.staff" },
 ];
 
 const TITLES: Record<PageId, { title: string; subtitle: string }> = {
@@ -35,13 +31,13 @@ const TITLES: Record<PageId, { title: string; subtitle: string }> = {
   staff: { title: "Staff", subtitle: "Manage staff, duty times & salary" },
   attendance: { title: "Attendance", subtitle: "Sessions, analytics & live clock controls" },
   leave: { title: "Leave", subtitle: "Requests, approvals & balances" },
-  payments: { title: "Payments", subtitle: "Payslips, payouts & overtime" },
-  payslip: { title: "Payslip", subtitle: "Earnings, deductions & net pay" },
-  settings: { title: "Settings", subtitle: "Shifts, breaks, PINs & sync" },
-  guide: { title: "Setup & Data Guide", subtitle: "Manage data & connect Google Sheets" },
-  stafftime: { title: "Staff Time Management", subtitle: "Manage any staff member's clock on their behalf" },
-  terminal: { title: "My Clock Terminal", subtitle: "" },
-  profile: { title: "Profile", subtitle: "" },
+  payments: { title: "Payroll", subtitle: "Pay, history & batch settlement" },
+  payslip: { title: "Payslip", subtitle: "Receipt view" },
+  settings: { title: "Settings", subtitle: "Business rules & configuration" },
+  guide: { title: "Guide", subtitle: "How to use this system" },
+  terminal: { title: "Time Clock", subtitle: "Clock in, breaks & clock out" },
+  profile: { title: "My Profile", subtitle: "Your shifts & payslips" },
+  stafftime: { title: "Staff Time", subtitle: "Review a staff member's clock records" },
 };
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -49,28 +45,30 @@ export function Layout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const header = TITLES[view.page];
 
-  const groups = role === "ADMIN" ? ADMIN_NAV : [{ label: "Main", items: SUPERVISOR_NAV.filter((i) => canPerm(i.perm)) }];
+  const groups = role === "ADMIN"
+    ? ADMIN_NAV
+    : [{ label: "Main", items: role === "SUPERVISOR" ? SUPERVISOR_NAV : SUPERVISOR_NAV.filter((i) => canPerm(i.perm)) }];
 
   const Sidebar = (
     <div className="flex h-full flex-col">
-      {/* Text-only brand header — no logo */}
-<div className="px-5 py-5">
-        <p className="text-base font-extrabold tracking-tight text-white">KPSMS</p>
-        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-primary-bright">Khan Pharmacy Staff Management</p>
+      <div className="border-b border-slate-800/90 px-4 py-4">
+        <p className="text-[15px] font-bold tracking-tight text-slate-50">KPSMS</p>
+        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-slate-400">Khan Pharmacy Staff Management</p>
       </div>
-      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-2">
+      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-3">
         {groups.map((g) => (
           <div key={g.label}>
-            <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{g.label}</p>
-            <div className="space-y-0.5">
+            <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">{g.label}</p>
+            <div className="space-y-1">
               {g.items.map((i) => {
                 const active = view.page === i.page || (view.page === "payslip" && i.page === "payments") || ((view.page === "staff") && i.page === "dashboard");
                 return (
                   <button key={i.page} onClick={() => { navigate(i.page); setMobileOpen(false); }}
-                    className={cn("group flex w-full items-center gap-3 rounded-full px-3 py-2 text-sm font-medium transition-all",
-                      active ? "bg-linear-to-r from-primary-deep to-primary-bright text-white shadow-md shadow-primary/25" : "text-slate-300 hover:bg-slate-800 hover:text-white")}>
-                    <Icon name={i.icon} size={18} className={active ? "text-white" : "text-slate-400 group-hover:text-slate-200"} />
-                    <span className="flex-1 text-left">{i.label}</span>
+                    className={cn("group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+                      active ? "bg-primary/15 text-white ring-1 ring-inset ring-primary/25" : "text-slate-300 hover:bg-slate-800/80 hover:text-slate-100")}>
+                    {active && <span className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary-bright" aria-hidden="true" />}
+                    <Icon name={i.icon} size={18} className={cn("shrink-0", active ? "text-primary-bright" : "text-slate-400 group-hover:text-slate-300")} />
+                    <span className="min-w-0 flex-1 truncate">{i.label}</span>
                   </button>
                 );
               })}
@@ -78,11 +76,11 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         ))}
       </nav>
-      <div className="border-t border-slate-800 p-3">
-        <div className="flex items-center gap-3 rounded-lg px-2 py-2">
-          <PhotoAvatar name={session?.name ?? "U"} photoUrl={session?.staffId ? data.staff.find((e) => e.employeeId === session.staffId)?.photoUrl : undefined} size={36} />
-          <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-white">{session?.name}</p><p className={cn("inline-block rounded px-1.5 text-[10px] font-semibold ring-1 ring-inset", ROLE_COLOR[role])}>{ROLE_LABEL[role]}</p></div>
-          <button onClick={logout} title="Sign out" className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-800 hover:text-white"><Icon name="logout" size={17} /></button>
+      <div className="border-t border-slate-800/90 px-3 py-3">
+        <div className="flex items-center gap-3 rounded-xl border border-slate-700/60 bg-slate-800/40 px-3 py-2.5">
+          <PhotoAvatar name={session?.name ?? "U"} photoUrl={session?.staffId ? data.staff.find((e) => e.employeeId === session.staffId)?.photoUrl : undefined} size={34} />
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-slate-100">{session?.name}</p><p className={cn("mt-0.5 inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset", ROLE_COLOR[role])}>{ROLE_LABEL[role]}</p></div>
+          <button onClick={logout} title="Sign out" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-700/70 hover:text-slate-100"><Icon name="logout" size={17} /></button>
         </div>
       </div>
     </div>
@@ -107,7 +105,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <ThemeToggle />
         </header>
         <main id="pl-scroll" className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+          <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
             {children}
           </div>
         </main>
@@ -141,4 +139,5 @@ function Toasts() {
     </div>
   );
 }
+
 

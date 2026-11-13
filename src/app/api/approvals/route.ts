@@ -26,20 +26,37 @@ const CreateApproval = z.object({
 });
 
 export async function POST(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   const parsed = CreateApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval payload" }, { status: 400 });
+  if (actor.role === "STAFF" && actor.staffId !== parsed.data.staffId) {
+    return Response.json({ error: "You can only create approvals for yourself" }, { status: 403 });
+  }
   try {
-    const approval = await prisma.approvalRequest.create({
-      data: {
-        id: parsed.data.id,
-        staffId: parsed.data.staffId,
-        sessionId: parsed.data.sessionId,
-        type: parsed.data.type,
-        deltaMin: parsed.data.deltaMin,
-        date: new Date(`${parsed.data.date}T00:00:00+06:00`),
-        status: "pending",
-      },
+    const session = await prisma.timeSession.findUnique({ where: { id: parsed.data.sessionId }, select: { staffId: true } });
+    if (!session || session.staffId !== parsed.data.staffId) return Response.json({ error: "Session does not belong to this staff member" }, { status: 400 });
+    const approval = await prisma.$transaction(async (tx) => {
+      const created = await tx.approvalRequest.create({
+        data: {
+          id: parsed.data.id,
+          staffId: parsed.data.staffId,
+          sessionId: parsed.data.sessionId,
+          type: parsed.data.type,
+          deltaMin: parsed.data.deltaMin,
+          date: new Date(`${parsed.data.date}T00:00:00+06:00`),
+          status: "pending",
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: "APPROVAL_SUBMITTED", entityType: "ApprovalRequest", entityId: created.id,
+          actorName: actor.name, actorRole: actor.role,
+          summary: `${actor.name} submitted ${created.type} approval for ${parsed.data.staffId}`,
+          managedBy: actor.role === "SUPERVISOR" && actor.staffId && actor.staffId !== parsed.data.staffId ? actor.name : null,
+        },
+      });
+      return created;
     });
     return Response.json(approval, { status: 201 });
   } catch (error) {
@@ -50,24 +67,41 @@ export async function POST(request: Request) {
 const ResolveApproval = z.object({
   id: z.string().min(1),
   status: z.enum(["approved", "rejected"]),
-  resolvedBy: z.string().min(1),
+  resolvedBy: z.string().optional(),
   managerNote: z.string().optional(),
 });
 
 export async function PATCH(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Only Admin or Supervisor can resolve approvals" }, { status: 403 });
   const parsed = ResolveApproval.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid approval decision" }, { status: 400 });
   try {
-    const updated = await prisma.approvalRequest.update({
-      where: { id: parsed.data.id },
-      data: {
-        status: parsed.data.status,
-        resolvedBy: parsed.data.resolvedBy,
-        resolvedAt: new Date(),
-        managerNote: parsed.data.managerNote?.trim() || null,
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const changed = await tx.approvalRequest.updateMany({
+        where: { id: parsed.data.id, status: "pending" },
+        data: {
+          status: parsed.data.status,
+          resolvedBy: actor.name,
+          resolvedAt: new Date(),
+          managerNote: parsed.data.managerNote?.trim() || null,
+        },
+      });
+      if (changed.count !== 1) return null;
+      const resolved = await tx.approvalRequest.findUnique({ where: { id: parsed.data.id } });
+      if (resolved) {
+        await tx.auditLog.create({
+          data: {
+            action: "APPROVAL_RESOLVED", entityType: "ApprovalRequest", entityId: resolved.id,
+            actorName: actor.name, actorRole: actor.role,
+            summary: `${actor.name} ${parsed.data.status} approval for ${resolved.staffId}`,
+          },
+        });
+      }
+      return resolved;
     });
+    if (!updated) return Response.json({ error: "Approval request not found or already resolved" }, { status: 409 });
     return Response.json(updated);
   } catch (error) {
     return dbErrorResponse(error);

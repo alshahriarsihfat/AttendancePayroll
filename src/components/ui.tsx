@@ -123,7 +123,7 @@ export function Field({
 }
 
 const inputCls =
-  "w-full rounded-full border-0 bg-surface-muted px-4 py-2.5 text-sm text-foreground placeholder:text-faint-foreground transition focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:bg-surface-muted/60 disabled:text-faint-foreground";
+  "w-full min-h-10 rounded-full border-0 bg-surface-muted px-4 py-2.5 text-sm text-foreground placeholder:text-faint-foreground transition focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/25 disabled:bg-surface-muted/60 disabled:text-faint-foreground";
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn(inputCls, className)} {...rest} />;

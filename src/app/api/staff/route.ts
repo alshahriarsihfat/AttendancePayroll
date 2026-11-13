@@ -20,9 +20,12 @@ const StaffSchema = z.object({
   counter: z.number().int().nullable(),
   role: z.enum(["STAFF", "SUPERVISOR"]),
   salaryType: z.enum(["Daily", "Weekly", "Monthly", "Hourly"]),
-  baseSalary: z.number(),
-  dailyRate: z.number(),
-  hourlyRate: z.number(),
+  // Legacy DB columns preserved (not used for active earning derivation under 2C.6.2).
+  baseSalary: z.number().finite().nonnegative().optional(),
+  dailyRate: z.number().finite().nonnegative().optional(),
+  hourlyRate: z.number().positive(),
+  dailyDutyHours: z.number().positive(),
+  workingDaysPerWeek: z.number().int().min(1).max(7).nullable().optional(),
   shiftStart: z.string(),
   shiftEnd: z.string(),
   mealBreakMin: z.number().int(),
@@ -50,9 +53,11 @@ function staffData(input: z.infer<typeof StaffSchema>) {
     counter: input.counter,
     role: input.role,
     salaryType: input.salaryType.toUpperCase() as "DAILY" | "WEEKLY" | "MONTHLY" | "HOURLY",
-    baseSalary: input.baseSalary,
-    dailyRate: input.dailyRate,
+    baseSalary: input.baseSalary ?? 0,
+    dailyRate: input.dailyRate ?? 0,
     hourlyRate: input.hourlyRate,
+    dailyDutyHours: input.dailyDutyHours,
+    workingDaysPerWeek: input.workingDaysPerWeek ?? null,
     shiftStart: input.shiftStart,
     shiftEnd: input.shiftEnd,
     mealBreakMin: input.mealBreakMin,
@@ -70,9 +75,35 @@ function staffData(input: z.infer<typeof StaffSchema>) {
 /** PUT is a PARTIAL update — absent fields keep their DB values. This is what
  *  makes lightweight mutations (e.g. assigning a counter) work without sending
  *  the entire record, and lets admin edits skip the password when unchanged. */
-const StaffUpdateSchema = StaffSchema.partial().extend({
+const StaffUpdateSchema = z.object({
   employeeId: z.string().min(1),
+  username: z.string().min(1).optional(),
   password: z.string().optional(),
+  fullName: z.string().min(1).optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  department: z.string().min(1).optional(),
+  jobTitle: z.string().min(1).optional(),
+  section: z.string().min(1).optional(),
+  counter: z.number().int().nullable().optional(),
+  role: z.enum(["STAFF", "SUPERVISOR"]).optional(),
+  salaryType: z.enum(["Daily", "Weekly", "Monthly", "Hourly"]).optional(),
+  baseSalary: z.number().finite().nonnegative().optional(),
+  dailyRate: z.number().finite().nonnegative().optional(),
+  hourlyRate: z.number().positive().optional(),
+  dailyDutyHours: z.number().positive().optional(),
+  workingDaysPerWeek: z.number().int().min(1).max(7).nullable().optional(),
+  shiftStart: z.string().optional(),
+  shiftEnd: z.string().optional(),
+  mealBreakMin: z.number().int().optional(),
+  restMin: z.number().int().optional(),
+  photoUrl: z.string().optional(),
+  status: z.enum(["Active", "On-leave", "Terminated"]).optional(),
+  isActive: z.boolean().optional(),
+  arrears: z.number().optional(),
+  advance: z.number().optional(),
+  joinDate: z.string().optional(),
+  endDate: z.string().nullable().optional(),
 });
 
 function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
@@ -109,19 +140,29 @@ function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
 }
 
 export async function POST(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = StaffSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload" }, { status: 400 });
+  if (!/^KP98\d{2}$/.test(parsed.data.employeeId)) {
+    return Response.json({ error: "Staff ID must be in KP98XX format" }, { status: 400 });
+  }
+  const existing = await prisma.staff.findUnique({ where: { employeeId: parsed.data.employeeId } });
+  if (existing) return Response.json({ error: "Employee ID taken" }, { status: 409 });
   try {
     const staff = await prisma.staff.create({ data: staffData(parsed.data) });
-    return Response.json(staff, { status: 201 });
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff, { status: 201 });
   } catch (error) {
     return dbErrorResponse(error);
   }
 }
 
 export async function PUT(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = StaffUpdateSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload", details: parsed.error.flatten() }, { status: 400 });
   try {
@@ -129,14 +170,17 @@ export async function PUT(request: Request) {
       where: { employeeId: parsed.data.employeeId! },
       data: staffUpdateData(parsed.data),
     });
-    return Response.json(staff);
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff);
   } catch (error) {
     return dbErrorResponse(error);
   }
 }
 
 export async function DELETE(request: Request) {
-  if (!sessionFromRequest(request)) return Response.json({ error: "Authentication required" }, { status: 401 });
+  const actor = sessionFromRequest(request);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const body = await request.json() as { employeeId?: string };
   if (!body.employeeId) return Response.json({ error: "employeeId is required" }, { status: 400 });
   try {
@@ -144,7 +188,8 @@ export async function DELETE(request: Request) {
       where: { employeeId: body.employeeId },
       data: { isActive: false, status: "TERMINATED", endDate: new Date() },
     });
-    return Response.json(staff);
+    const { password: _password, ...safeStaff } = staff;
+    return Response.json(safeStaff);
   } catch (error) {
     return dbErrorResponse(error);
   }

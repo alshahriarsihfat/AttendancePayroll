@@ -106,7 +106,7 @@ export function Staff() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {rows.map((s) => {
-            const shift = data.shifts.find((x) => x.id === s.shiftId);
+
             return (
               <div key={s.employeeId}
                 className="group flex h-full flex-col rounded-2xl border border-edge bg-surface p-4 shadow-card transition hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-card-lg">
@@ -140,11 +140,7 @@ export function Staff() {
 
                 {/* shift + salary chips */}
                 <div className="mt-3.5 flex flex-wrap gap-1.5">
-                  {shift && (
-                    <span className="inline-flex items-center gap-1.5 rounded-md bg-surface-muted px-2 py-1 text-[11px] font-medium text-muted-foreground ring-1 ring-inset ring-edge">
-                      <span className="h-2 w-2 rounded-full" style={{ background: shift.color }} />Template: {shift.name}
-                    </span>
-                  )}
+
                   <span className="inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2 py-1 text-[11px] font-semibold text-primary ring-1 ring-inset ring-primary/25">
                     <Icon name="wallet" size={11} />{salaryText(s)}
                   </span>

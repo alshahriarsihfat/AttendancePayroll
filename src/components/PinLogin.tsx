@@ -1,8 +1,11 @@
+﻿"use client";
+
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Icon } from "../components/icons";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { cn } from "../lib/utils";
+import { sanitizeReturnTo } from "../lib/app-routes";
 
 export function PinLogin() {
   const { loginAdmin, loginEmployee } = useApp();
@@ -23,15 +26,18 @@ export function PinLogin() {
     try {
       const response = await fetch("/api/auth", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      if (!response.ok) throw new Error("Unable to sign in. Please try again.");
-      const payload = await response.json() as { session?: { role?: string; staffId?: string } };
-      if (payload.session?.role === "ADMIN") loginAdmin();
-      else if (payload.session?.staffId) loginEmployee(payload.session.staffId);
-      else throw new Error("Unable to establish a valid session.");
-      window.location.assign("/");
+      if (!response.ok) {
+        let message = "Unable to sign in. Please try again.";
+        try { const payload = await response.json() as { error?: string }; if (payload?.error) message = payload.error; } catch { /* ignore */ }
+        throw new Error(message);
+      }
+      await response.json();
+      const returnTo = sanitizeReturnTo(typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("returnTo") : null);
+      window.location.replace(returnTo || "/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in. Please try again.");
       setShake(true);
@@ -43,7 +49,7 @@ export function PinLogin() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-page p-4">
-      {/* Ambient modern background — royal blue + dark mode tints */}
+      {/* Ambient modern background */}
       <div className="pointer-events-none absolute inset-0 bg-linear-to-br from-primary-soft/60 via-surface to-sky-100 dark:from-primary-deep/25 dark:via-transparent dark:to-primary-bright/15" />
       <div className="pointer-events-none absolute -left-40 top-0 h-112 w-md rounded-full bg-primary/25 blur-[100px] dark:bg-primary-deep/40" />
       <div className="pointer-events-none absolute -right-40 bottom-0 h-112 w-md rounded-full bg-primary-bright/25 blur-[100px] dark:bg-primary-bright/35" />
@@ -55,7 +61,6 @@ export function PinLogin() {
           <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
           <div className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-primary-bright/30 blur-3xl" />
 
-          {/* Brand text only — no logo */}
           <div className="relative flex flex-col items-start gap-3">
             <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20"><Icon name="pill" size={26} className="text-white" /></span>
             <div>
@@ -79,20 +84,17 @@ export function PinLogin() {
 
         {/* ===== RIGHT — Login ===== */}
         <section className="flex flex-col justify-center p-8 sm:p-12">
-          {/* Mobile brand header — visible only on small screens (left panel is hidden) */}
           <div className="mb-7 flex flex-col items-center gap-2 text-center lg:hidden">
             <span className="flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg shadow-primary/30" style={{ background: "linear-gradient(135deg,#1d4ed8,#3b82f6)" }}><Icon name="pill" size={30} /></span>
             <p className="text-lg font-extrabold tracking-tight text-foreground">Khan Pharmacy</p>
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-primary">Trusted Care Since 1998</p>
           </div>
-          {/* Desktop heading */}
           <div className="mb-7 hidden lg:block">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">Login</h1>
             <p className="mt-1 text-sm text-muted-foreground">Sign in to your staff account.</p>
           </div>
 
           <div className={cn("space-y-4", shake && "animate-[pl-shake_0.42s]")}>
-            {/* Username */}
             <div className="group relative">
               <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground transition group-focus-within:text-primary"><Icon name="idcard" size={18} /></span>
               <input
@@ -106,7 +108,6 @@ export function PinLogin() {
               />
             </div>
 
-            {/* Password */}
             <div className="group relative">
               <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground transition group-focus-within:text-primary"><Icon name="lock" size={18} /></span>
               <input
@@ -124,11 +125,9 @@ export function PinLogin() {
               </button>
             </div>
 
-            {/* Error */}
             <div className="h-5 text-sm font-medium text-rose-600">{error}</div>
           </div>
 
-          {/* Submit */}
           <button type="button" onClick={() => void submit()} disabled={submitting} className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-linear-to-r from-primary-deep to-primary-bright text-[15px] font-bold text-white shadow-lg shadow-primary/30 transition hover:from-primary hover:to-primary-bright active:scale-[0.99] disabled:cursor-wait disabled:opacity-60">
             <Icon name="power" size={18} /> {submitting ? "Signing in..." : "Login"}
           </button>

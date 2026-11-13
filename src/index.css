@@ -234,7 +234,12 @@ input[type="number"] {
   #root {
     height: auto !important;
     background: #fff !important;
+    color: #0f172a !important;
     overflow: visible !important;
+  }
+
+  body {
+    background-color: #fff !important;
   }
 
   main,
@@ -243,26 +248,26 @@ input[type="number"] {
     height: auto !important;
   }
 
-  /* Keep brand colours + gradients on paper */
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
-  /* Avoid awkward page breaks inside payslip blocks */
-  tr,
-  section,
-  header,
-  footer {
-    page-break-inside: avoid;
-    break-inside: avoid;
-  }
-
-  /* Let the payslip fill the page */
   .pl-document {
     box-shadow: none !important;
     max-width: none !important;
     width: 100% !important;
     margin: 0 !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+  }
+
+  tr,
+  img,
+  header,
+  footer {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 }

@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // API Route Handlers — copy these into src/app/api/*/route.ts in Next.js.
 // Every handler uses: Zod validation, Prisma singleton, safe async-await,
 // and atomic transactions for multi-table writes.
@@ -8,12 +8,14 @@
 
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 import { prisma, payRound } from "./db";
 import { dbErrorResponse } from "@/lib/api-error";
 import { dateKeyInZone, minutesBetween } from "@/lib/dates";
+import { accrueCompletedSession } from "@/lib/payroll-accrual-service";
 import { scheduledShiftBounds } from "@/lib/timeclock";
 import { sessionFromRequest, type AuthSession } from "@/lib/auth-session";
+import { computeAutoClockoutDueMs } from "@/lib/auto-clockout-service";
+import { createAdvanceAdjustment, getEligibleEarningsForStaff, getStaffAdvanceState, advErr } from "@/lib/advance-adjustment-service";
 
 // ---------------------------------------------------------------------------
 // POST /api/clock — Handles ALL clock actions atomically.
@@ -49,7 +51,11 @@ export async function POST_clock(req: Request) {
   if (!body.success) {
     return Response.json({ error: "Invalid payload", details: body.error.flatten() }, { status: 400 });
   }
-  const employeeId = body.data.employeeId ?? body.data.staffId ?? "";
+  let employeeId = body.data.employeeId ?? body.data.staffId ?? "";
+if (actor.role === "STAFF") {
+  if (!actor.staffId) return Response.json({ error: "Staff identity missing" }, { status: 403 });
+  employeeId = actor.staffId;
+}
   const { action } = body.data;
   const now = new Date();
   const todayKey = dhakaDateKey(now);
@@ -140,21 +146,45 @@ export async function POST_clock(req: Request) {
           return { session: reopened, lateMin, reopened: true };
         }
 
-        // Close forgotten prior-day sessions at the scheduled shift end before
-        // creating today's unique staff/date row.
+        // Close forgotten prior-day/overdue sessions via canonical auto-clockout rules before
+        // creating today's unique staff/date row. Eligible only at/after scheduled end + AUTO_CLOCKOUT_MINUTES.
+        // Sessions with activated overtime are not auto-closed. Close is claimed conditionally/idempotently;
+        // accrual runs after durable close via canonical service (outside this tx) so accrual failure never
+        // reverts closure and retries are safe.
         const openSessions = await tx.timeSession.findMany({
           where: { staffId: employeeId, timeOut: null, date: { lt: today } },
         });
+        const priorDayAutoClosedIds: string[] = [];
         for (const open of openSessions) {
-          // Judge the forgotten session against ITS OWN snapshotted shift end
-          // (fall back to the live assignment for pre-snapshot legacy rows) so
-          // a shift edit never retroactively rewrites when an old shift closed.
-          const { endMin } = sessionShiftProps(staff, open);
-          const autoOut = dhakaAt(dhakaDateKey(open.date), endMin);
-          await tx.timeSession.update({
-            where: { id: open.id },
-            data: { timeOut: autoOut, completed: true, autoClockedOut: true },
+          if (open.overtimeActivatedAt) continue;
+          const dueMs = computeAutoClockoutDueMs({ ...open, staff: { shiftStart: staff.shiftStart, shiftEnd: staff.shiftEnd } }, config);
+          if (dueMs == null || now.getTime() < dueMs) continue;
+          const due = new Date(dueMs);
+          const closeIso = due.toISOString();
+          const breaksArr: Array<{ end?: string | null; [k: string]: unknown }> = JSON.parse(JSON.stringify(open.breaks ?? []));
+          const goOutsArr: Array<{ end?: string | null; [k: string]: unknown }> = JSON.parse(JSON.stringify(open.goOuts ?? []));
+          const extraArr: Array<{ end?: string | null; [k: string]: unknown }> = JSON.parse(JSON.stringify(open.extraTime ?? []));
+          const changed = await tx.timeSession.updateMany({
+            where: { id: open.id, timeOut: null, completed: false, overtimeActivatedAt: null },
+            data: {
+              timeOut: due, completed: true, autoClockedOut: true,
+              breaks: breaksArr.map((b) => (b.end ? b : { ...b, end: closeIso })) as any,
+              goOuts: goOutsArr.map((g) => (g.end ? g : { ...g, end: closeIso })) as any,
+              extraTime: extraArr.map((b) => (b.end ? b : { ...b, end: closeIso })) as any,
+              overtimeMinutes: 0, overtimeStatus: "NotRequired",
+            },
           });
+          if (changed.count === 1) {
+            priorDayAutoClosedIds.push(open.id);
+            await tx.auditLog.create({
+              data: {
+                action: "AUTO_CLOCK_OUT", entityType: "TimeSession", entityId: open.id,
+                actorName: "System", actorRole: "SYSTEM",
+                summary: `${staff.fullName} automatically clocked out (prior-day overdue)`,
+                after: { source: "PRIOR_DAY_AUTO_CLOSE", autoClockedOut: true, dueAt: due.toISOString(), workDate: dateKeyInZone(open.date) },
+              },
+            });
+          }
         }
 
         const [hh, mm] = parseShiftTime(staff.shiftStart);
@@ -179,9 +209,42 @@ export async function POST_clock(req: Request) {
         if (lateMin >= configNumber(config, "LATE_GRACE_MINUTES", 10)) {
           await tx.approvalRequest.create({ data: { staffId: employeeId, sessionId: session.id, type: "late", deltaMin: lateMin, date: today } });
         }
-        return { session, lateMin };
+        return { session, lateMin, ...(priorDayAutoClosedIds.length ? { priorDayAutoClosedIds } : {}) };
       });
       if ("error" in result) return Response.json({ error: result.error }, { status: 409 });
+      // Accrue durably auto-closed prior-day sessions after clock-in transaction commits (canonical, idempotent, retry-safe).
+      if ("priorDayAutoClosedIds" in result && Array.isArray((result as any).priorDayAutoClosedIds)) {
+        const ids = (result as any).priorDayAutoClosedIds as string[];
+        const accruals: Array<{ sessionId: string; accrual?: any; error?: string }> = [];
+        for (const sid of ids) {
+          try {
+            const accrual = await prisma.$transaction((tx) =>
+              accrueCompletedSession(tx, { sessionId: sid, actor: { name: "System", role: "SYSTEM" }, source: "SYSTEM", config })
+            );
+            accruals.push({ sessionId: sid, accrual });
+            try {
+              await prisma.auditLog.create({
+                data: {
+                  action: accrual?.status === "INCOMPLETE" ? "AUTO_CLOCKOUT_ACCRUAL_INCOMPLETE" : "AUTO_CLOCKOUT_ACCRUAL_COMPLETED",
+                  entityType: "TimeSession", entityId: sid, actorName: "System", actorRole: "SYSTEM",
+                  summary: accrual?.status === "INCOMPLETE" ? `Prior-day auto-close accrual incomplete for session ${sid}` : `Prior-day auto-close accrual processed for session ${sid}`,
+                  after: { source: "PRIOR_DAY_AUTO_CLOSE", ...(accrual ?? {}) },
+                  reason: accrual?.reason ?? null,
+                },
+              });
+            } catch {}
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "ACCRUAL_FAILED";
+            accruals.push({ sessionId: sid, error: msg });
+            try {
+              await prisma.auditLog.create({
+                data: { action: "AUTO_CLOCKOUT_ACCRUAL_FAILED", entityType: "TimeSession", entityId: sid, actorName: "System", actorRole: "SYSTEM", summary: `Prior-day auto-close accrual failed for session ${sid}`, reason: msg, after: { source: "PRIOR_DAY_AUTO_CLOSE", error: msg } },
+              });
+            } catch {}
+          }
+        }
+        (result as any).priorDayAutoAccruals = accruals;
+      }
       return Response.json(result);
     }
 
@@ -254,10 +317,54 @@ export async function POST_clock(req: Request) {
         extraTime: extraTime.map((b) => (b.end ? b : { ...b, end: outISO })) as unknown as Prisma.InputJsonValue,
       };
 
-      await prisma.timeSession.update({
-        where: { id: session.id },
-        data: { timeOut: now, completed: true, ...closed },
+      // Supervisor-authorized Extra Time (OT):
+      // - OT only when explicitly activated by supervisor (overtimeActivatedAt)
+      // - OT duration = activation timestamp -> actual manual clock-out
+      // - time before activation is not OT; no approval workflow/gate
+      // - existing break deductions applied within OT interval (unpaid overlap)
+      let overtimeMinutes = 0;
+      let overtimeStatus: "Pending" | "Approved" | "NotRequired" = "NotRequired";
+      if (session.overtimeActivatedAt) {
+        if (session.shiftEndMin == null) {
+          return Response.json({ error: "Manual review required: missing shift snapshot" }, { status: 422 });
+        }
+        const shiftEndMs = session.date.getTime() + session.shiftEndMin * 60000;
+        const activationMs = session.overtimeActivatedAt.getTime();
+        if (!Number.isFinite(activationMs) || activationMs < shiftEndMs) {
+          return Response.json({ error: "Manual review required: invalid overtime activation" }, { status: 422 });
+        }
+        if (now.getTime() <= activationMs) {
+          return Response.json({ error: "Manual review required: invalid overtime interval" }, { status: 422 });
+        }
+        const otStartMs = Math.max(activationMs, shiftEndMs);
+        const elapsed = Math.floor((now.getTime() - otStartMs) / 60000);
+        let unpaidOverlap = 0;
+        try {
+          for (const b of breaks) {
+            if (b.type !== "unpaid") continue;
+            if (!b.start) continue;
+            const bStart = new Date(b.start).getTime();
+            const bEnd = b.end ? new Date(b.end).getTime() : now.getTime();
+            if (!Number.isFinite(bStart) || !Number.isFinite(bEnd)) throw new Error("bad break");
+            const overlapStart = Math.max(bStart, otStartMs);
+            const overlapEnd = Math.min(bEnd, now.getTime());
+            if (overlapEnd > overlapStart) unpaidOverlap += Math.floor((overlapEnd - overlapStart) / 60000);
+          }
+        } catch {
+          return Response.json({ error: "Manual review required: invalid break data" }, { status: 422 });
+        }
+        overtimeMinutes = Math.max(0, elapsed - unpaidOverlap);
+        // Enum-compatible marker for "authorized/ended payable OT" without approval workflow.
+        overtimeStatus = "Approved";
+      }
+
+      const updatedCount = await prisma.timeSession.updateMany({
+        where: { id: session.id, timeOut: null },
+        data: { timeOut: now, completed: true, ...closed, overtimeMinutes, overtimeStatus },
       });
+      if (updatedCount.count !== 1) {
+        return Response.json({ error: "Already clocked out" }, { status: 409 });
+      }
 
       if (earlyMin >= 10) {
         await prisma.approvalRequest.create({
@@ -274,7 +381,29 @@ export async function POST_clock(req: Request) {
         },
       });
 
-      return Response.json({ ok: true, earlyDepartureMin: earlyMin });
+      // Accrual after durable clock-out completion (preserve completed session on accrual failure). Idempotent + retry-safe.
+      // When supervisor-authorized Extra Time was activated, reconcile unlocked CALCULATED earning to finalized OT minutes (no approval gate).
+      let payrollAccrual: { created: boolean; skipped?: string; earningId?: string; status?: string; reason?: string | null; error?: string } | undefined;
+      try {
+        payrollAccrual = await prisma.$transaction((tx) =>
+          accrueCompletedSession(tx, {
+            sessionId: session.id,
+            actor: { name: actor.name, role: actor.role },
+            source: session.overtimeActivatedAt ? "MANUAL_CLOSE" : "CLOCK_OUT",
+            config,
+            allowCalculatedReconcile: !!session.overtimeActivatedAt,
+          })
+        );
+      } catch (e) {
+        payrollAccrual = { created: false, error: e instanceof Error ? e.message : "ACCRUAL_FAILED" };
+      }
+
+      return Response.json({
+        ok: true,
+        earlyDepartureMin: earlyMin,
+        overtimeMinutes,
+        ...(payrollAccrual?.error ? { payrollAccrualError: payrollAccrual.error } : { payrollAccrual }),
+      });
     }
 
     return Response.json({ error: "Unknown action" }, { status: 400 });
@@ -283,296 +412,196 @@ export async function POST_clock(req: Request) {
   }
 }
 
+// Legacy POST /api/payments retired: src/app/api/payments/route.ts returns 410 LEGACY_PAYMENT_ENDPOINT_RETIRED.
+// Canonical payment writes are handled only by /api/payments/allocate and /api/payments/coordinated.
+// POST /api/advance — Give an advance (অগ্রিম) to a staff member. Idempotency-safe when idempotencyKey provided.
 // ---------------------------------------------------------------------------
-// POST /api/payments â€” Settle ONE or MULTIPLE unpaid days for a staff member.
-//
-// Strictly day-wise & clock-out dependent:
-//   â€¢ Each day (session) is paid with its OWN Payment row â€” never lumped.
-//   â€¢ Payment is LOCKED until every selected shift has clocked out.
-//   â€¢ Selecting several unpaid days settles them in ONE atomic transaction
-//     (shared batchId); the receipt/payslip itemizes every date covered.
-// Runs in a TRANSACTION: Payment rows + OvertimeLogs + AdvanceLog + Staff.advance.
-// ---------------------------------------------------------------------------
-const PaySchema = z.object({
-  // One settlement transaction covers one or more day-wise (per-shift) rows.
-  sessionIds: z.array(z.string().min(1)).min(1),
-  // Legacy single-session payload ({ sessionId }) is coerced into the batch.
-  sessionId: z.string().min(1).optional(),
-  paidBy: z.string().min(1),
+const AdvanceSchema = z.object({
+  staffId: z.string().trim().min(1),
+  amount: z.number().positive().finite(),
+  createdBy: z.string().optional(),
+  note: z.string().trim().max(1000).optional(),
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
 });
 
-/** Thrown when any session in a settlement already has a payment record
- *  (checked inside the transaction so concurrent requests can't both create
- *  duplicates). */
-class PaymentAlreadyPaidError extends Error {}
-
-type PayoutSessionRow = {
-  date: Date;
-  timeIn: Date;
-  timeOut: Date | null;
-  breaks: Prisma.JsonValue;
-  goOuts: Prisma.JsonValue;
-  extraTime: Prisma.JsonValue;
-  shiftStartMin?: number | null;
-  shiftEndMin?: number | null;
-};
-
-/**
- * Compute ONE day's payout from its clocked-out session â€” the single
- * authoritative wage calculation on the server (mirrors the frontend
- * computeSession() so both layers agree). Clock-out dependent by design:
- * a session without a timeOut cannot be paid (enforced by the caller).
- */
-function computeSessionPayout(
-  session: PayoutSessionRow,
-  staff: { shiftStart: string; shiftEnd: string; salaryType: string; hourlyRate: number; dailyRate: number; baseSalary: number; mealBreakMin: number; restMin: number },
-  config: Record<string, string>
-) {
-  if (!session.timeOut) throw new Error("PAYMENT_LOCKED_BEFORE_CLOCK_OUT");
-  const out = session.timeOut;
-  const outISO = out.toISOString();
-  const shiftHours = payRound(parseShiftHours(staff.shiftStart, staff.shiftEnd));
-  const hourlyRate = payRound(getHourlyRate(staff, shiftHours));
-
-  const workedMin = payRound(Math.max(0, (out.getTime() - session.timeIn.getTime()) / 60000), 4);
-  const breaks: Segment[] = JSON.parse(JSON.stringify(session.breaks ?? "[]"));
-  const extraTime = (session.extraTime ?? []) as Array<{ start: string; end: string | null }>;
-
-  // Dual-pool break engine: 30m meal + 15m rest = 45m paid ceiling
-  let mealMin = 0, restMin = 0, unpaidMin = 0;
-  for (const b of breaks) {
-    const end = b.end ? new Date(b.end).getTime() : out.getTime();
-    const mins = (end - new Date(b.start).getTime()) / 60000;
-    if (b.type === "meal") mealMin += mins;
-    else if (b.type === "rest") restMin += mins;
-    else unpaidMin += mins;
+function advanceErrorResponse(err: unknown): Response {
+  const e = err as any;
+  const code = typeof e?.code === "string" ? e.code : undefined;
+  switch (code) {
+    case "STAFF_NOT_FOUND": return Response.json({ error: "Staff not found" }, { status: 404 });
+    case "ADVANCE_LOG_NOT_FOUND": return Response.json({ error: "Advance not found" }, { status: 404 });
+    case "EARNING_NOT_FOUND": return Response.json({ error: "Earning not found" }, { status: 404 });
+    case "CROSS_STAFF_ADVANCE":
+    case "CROSS_STAFF_EARNING": return Response.json({ error: "Staff mismatch: advance/earning must belong to the same staff member" }, { status: 403 });
+    case "ADVANCE_ADJUSTMENT_IDEMPOTENCY_MISMATCH": return Response.json({ error: "Idempotency key reuse with a different request is not allowed" }, { status: 409 });
+    case "ADVANCE_ADJUSTMENT_CONFLICT": return Response.json({ error: "A conflicting adjustment request is in progress; retry safely with the same idempotency key" }, { status: 409 });
+    case "ADJUSTMENT_EXCEEDS_OUTSTANDING_ADVANCE": return Response.json({ error: "Adjustment exceeds outstanding advance" }, { status: 409 });
+    case "ADJUSTMENT_EXCEEDS_ELIGIBLE_EARNING": return Response.json({ error: "Adjustment exceeds remaining eligible earned salary" }, { status: 409 });
+    case "ADJUSTMENT_EXCEEDS_ADVANCE_LOG_OUTSTANDING": return Response.json({ error: "Adjustment exceeds selected advance outstanding" }, { status: 409 });
+    case "EARNING_NOT_ELIGIBLE": return Response.json({ error: "Selected earning is not eligible for advance adjustment" }, { status: 409 });
+    case "EARNING_FULLY_PAID_OR_ADJUSTED": return Response.json({ error: "Selected earning is already fully paid/adjusted" }, { status: 409 });
+    case "EARNING_ALREADY_SETTLED": return Response.json({ error: "Legacy-settled earning cannot be adjusted" }, { status: 409 });
+    case "NO_OUTSTANDING_ADVANCE": return Response.json({ error: "No outstanding advance available for adjustment" }, { status: 409 });
+    case "ADVANCE_NOT_ADJUSTABLE": return Response.json({ error: "Selected advance record cannot be adjusted" }, { status: 409 });
+    case "ADVANCE_LOCK_UNAVAILABLE": return Response.json({ error: "Advance adjustment service is temporarily unavailable" }, { status: 503 });
+    case "INVALID_ADJUSTMENT_AMOUNT":
+    case "INVALID_IDEMPOTENCY_KEY":
+    case "STAFF_REQUIRED":
+    case "ADVANCE_LOG_REQUIRED":
+    case "EARNING_REQUIRED": return Response.json({ error: e?.message || "Invalid adjustment request" }, { status: 400 });
+    default: return dbErrorResponse(err);
   }
-  const paidAllow = configNumber(config, "MEAL_BREAK_MINUTES", staff.mealBreakMin) + configNumber(config, "REST_BREAK_MINUTES", staff.restMin);
-  const paidTaken = mealMin + restMin;
-  const overBreakMin = payRound(Math.max(0, paidTaken - paidAllow) + unpaidMin, 4);
-
-  // Overtime: minutes past the scheduled shift end, judged against the
-  // SESSION's snapshotted shift for historical fidelity.
-  const shiftEndMs = scheduledShiftBounds(session.timeIn.toISOString(), sessionShiftProps(staff, session)).end;
-  const overtimeMin = out.getTime() > shiftEndMs ? Math.round((out.getTime() - shiftEndMs) / 60000) : 0;
-  const extraTimeMin = extraTime.reduce((sum: number, et) => {
-    const endISO = et.end ?? outISO;
-    return sum + minutesBetween(et.start, endISO);
-  }, 0);
-
-  // ---- Money (single rounding point) ----
-  const totalOvertimeMin = overtimeMin + extraTimeMin;
-  const basicMin = Math.max(0, workedMin - totalOvertimeMin);
-  const grossPay = payRound(hourlyRate * (basicMin / 60));
-  const overBreakDeduction = payRound(hourlyRate * (overBreakMin / 60));
-  const overtimePay = payRound(hourlyRate * configNumber(config, "OVERTIME_MULTIPLIER", 1.25) * (totalOvertimeMin / 60));
-  const netEarned = payRound(Math.max(0, grossPay + overtimePay - overBreakDeduction));
-
-  return {
-    dutyHours: shiftHours,
-    workedMin: Math.round(workedMin),
-    breakMin: Math.round(mealMin + restMin),
-    overBreakMin: Math.round(overBreakMin),
-    overtimeMin: Math.max(0, totalOvertimeMin),
-    hourlyRate,
-    grossPay,
-    overtimePay,
-    overBreakDeduction,
-    netEarned,
-  };
 }
-export async function POST_payment(req: Request) {
-  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
 
+export async function POST_advance(req: Request) {
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
   let raw: unknown;
   try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
-  const body = PaySchema.safeParse(raw);
-  if (!body.success) return Response.json({ error: "Invalid payload", details: body.error.flatten() }, { status: 400 });
+  const body = AdvanceSchema.safeParse(raw);
+  if (!body.success) return Response.json({ error: "Invalid payload", issues: body.error.flatten().fieldErrors }, { status: 400 });
 
-  const sessionIds = body.data.sessionIds ?? (body.data.sessionId ? [body.data.sessionId] : []);
-  const paidBy = body.data.paidBy;
+  const staffId = body.data.staffId;
+  const amount = payRound(body.data.amount);
+  const note = (body.data.note ?? "").trim() || null;
+  const idemKey = body.data.idempotencyKey ? body.data.idempotencyKey.trim() : null;
 
   try {
-    const sessions = await prisma.timeSession.findMany({
-      where: { id: { in: sessionIds } },
-      include: { staff: true },
-    });
-    if (sessions.length !== sessionIds.length) {
-      return Response.json({ error: "One or more selected shifts were not found" }, { status: 404 });
-    }
-
-    // ---- CLOCK-OUT LOCK: no payment before a shift is completed ----
-    const openDays = sessions.filter((s) => !s.timeOut);
-    if (openDays.length > 0) {
-      return Response.json({
-        error: "Pay is locked until the staff member clocks out",
-        details: `Shift(s) still on duty: ${openDays.map((s) => dateKeyInZone(s.date)).join(", ")}. Clock out first.`,
-      }, { status: 409 });
-    }
-
-    // ---- a settlement covers exactly one staff member's days ----
-    const staff = sessions[0].staff;
-    if (sessions.some((s) => s.staffId !== staff.employeeId)) {
-      return Response.json({ error: "A settlement can only cover one staff member's days" }, { status: 400 });
-    }
-
-    const config = await loadConfig();
-
-    // ---- day-wise wage computation (oldest day first so the slip reads naturally) ----
-    const days = sessions
-      .slice()
-      .sort((a, b) => a.date.getTime() - b.date.getTime())
-      .map((s) => ({
-        session: s,
-        calc: computeSessionPayout(s, staff, config),
-        periodLabel: `${dateKeyInZone(s.date)} · Day`,
-      }));
-
-    const totalNet = payRound(days.reduce((sum, d) => sum + d.calc.netEarned, 0));
-
-    // ---- AUTO ADVANCE ADJUSTMENT, spread across the days proportionally ----
-    // The advance is attributed per-day (balanced rounding) so every Payment
-    // row stays internally consistent: netPay = netEarned - advanceAdjusted.
-    const deduction = payRound(Math.min(Math.max(0, staff.advance), totalNet));
-    let remainder = deduction;
-    const rows = days.map((d, i) => {
-      const isLast = i === days.length - 1;
-      let share = isLast
-        ? remainder
-        : totalNet > 0 ? payRound((d.calc.netEarned * deduction) / totalNet) : 0;
-      share = Math.max(0, Math.min(share, d.calc.netEarned));
-      remainder = payRound(remainder - share);
-      return {
-        ...d,
-        advanceAdjusted: payRound(share),
-        netPay: payRound(Math.max(0, d.calc.netEarned - share)),
-      };
-    });
-// ---- ATOMIC TRANSACTION ----
-    // Duplicate-payment guards run INSIDE the transaction; paired with the
-    // `@unique` constraint on Payment.sessionId, concurrent double-payments
-    // for the same day are impossible.
-    const batchId = randomUUID();
     const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const paymentRows: Array<{ id: string; advanceAdjusted: number; netPay: number }> = [];
-      for (const row of rows) {
-        const alreadyPaid = await tx.payment.findFirst({ where: { sessionId: row.session.id } });
-        if (alreadyPaid) throw new PaymentAlreadyPaidError();
-        const p = await tx.payment.create({
-          data: {
-            staffId: staff.employeeId, sessionId: row.session.id,
-            date: row.session.date, paidAt: new Date(),          // exact cash-flow time
-            periodLabel: row.periodLabel,
-            dutyHours: row.calc.dutyHours, workedMin: row.calc.workedMin,
-            breakMin: row.calc.breakMin, overBreakMin: row.calc.overBreakMin,
-            overtimeMin: row.calc.overtimeMin, hourlyRate: row.calc.hourlyRate,
-            grossPay: row.calc.grossPay, overtimePay: row.calc.overtimePay,
-            overBreakDeduction: row.calc.overBreakDeduction,
-            advanceAdjusted: row.advanceAdjusted, netPay: row.netPay,
-            status: "PAID", paidBy, batchId,
-          },
-        });
-        paymentRows.push({ id: p.id, advanceAdjusted: p.advanceAdjusted, netPay: p.netPay });
-        if (row.calc.overtimeMin > 0) {
-          await tx.overtimeLog.create({
-            data: {
-              staffId: staff.employeeId, date: row.session.date,
-              overtimeMin: row.calc.overtimeMin, hourlyRate: row.calc.hourlyRate,
-              amount: row.calc.overtimePay,
-            },
-          });
+      const staff = await tx.staff.findUnique({ where: { employeeId: staffId } });
+      if (!staff) throw advErr("STAFF_NOT_FOUND");
+
+      if (idemKey) {
+        const existing = await tx.advanceLog.findUnique({ where: { idempotencyKey: idemKey } as any });
+        if (existing) {
+          const same = existing.staffId === staffId && existing.type === "GIVEN" && Math.abs(payRound(Number(existing.amount) || 0) - amount) <= 0.000001 && ((existing.note ?? null) === note);
+          if (!same) throw advErr("ADVANCE_ADJUSTMENT_IDEMPOTENCY_MISMATCH", "Idempotency key reuse with different payload");
+          const st = await getStaffAdvanceState(tx as any, staffId);
+          return { ok: true, advanceId: existing.id, staffId, amount: payRound(Number(existing.amount) || 0), balance: st.outstandingAdvance, outstandingAdvance: st.outstandingAdvance, skippedDuplicate: true, reason: "REPLAY" as const };
         }
       }
 
-      const totalAdjusted = payRound(paymentRows.reduce((s, p) => s + p.advanceAdjusted, 0));
-      if (totalAdjusted > 0) {
-        await tx.advanceLog.create({
+      const updatedStaff = await tx.staff.update({
+        where: { employeeId: staffId },
+        data: { advance: { increment: amount } },
+        select: { advance: true, fullName: true },
+      });
+
+      let log: any;
+      try {
+        log = await tx.advanceLog.create({
           data: {
-            staffId: staff.employeeId, type: "ADJUSTED", amount: totalAdjusted,
-            balanceAfter: payRound(staff.advance - totalAdjusted),
-            paymentId: paymentRows[0].id, note: "Auto-adjusted from payout",
-            createdBy: paidBy,
-          },
+            staffId,
+            type: "GIVEN",
+            amount,
+            balanceAfter: updatedStaff.advance,
+            note,
+            createdBy: actor.name,
+            ...(idemKey ? { idempotencyKey: idemKey } : {}),
+          } as any,
         });
-        await tx.staff.update({
-          where: { employeeId: staff.employeeId },
-          data: { advance: payRound(Math.max(0, staff.advance - totalAdjusted)) },
-        });
+      } catch (e: any) {
+        if (idemKey && (e?.code === "P2002")) {
+          const existing = await tx.advanceLog.findUnique({ where: { idempotencyKey: idemKey } as any });
+          if (existing) {
+            const same = existing.staffId === staffId && existing.type === "GIVEN" && Math.abs(payRound(Number(existing.amount) || 0) - amount) <= 0.000001 && ((existing.note ?? null) === note);
+            if (!same) throw advErr("ADVANCE_ADJUSTMENT_IDEMPOTENCY_MISMATCH", "Idempotency key reuse with different payload");
+            const st = await getStaffAdvanceState(tx as any, staffId);
+            return { ok: true, advanceId: existing.id, staffId, amount: payRound(Number(existing.amount) || 0), balance: st.outstandingAdvance, outstandingAdvance: st.outstandingAdvance, skippedDuplicate: true, reason: "REPLAY" as const };
+          }
+        }
+        throw e;
       }
 
-      const netTotal = payRound(paymentRows.reduce((s, p) => s + p.netPay, 0));
-      const dateList = rows.map((r) => dateKeyInZone(r.session.date)).join(", ");
       await tx.auditLog.create({
         data: {
-          action: "PAYMENT", entityType: "Payment", entityId: paymentRows[0].id,
-          actorName: paidBy, actorRole: "SUPERVISOR",
-          summary: `Paid à§³${netTotal.toFixed(2)} to ${staff.fullName} (${rows.length} day${rows.length > 1 ? "s" : ""}: ${dateList})` +
-                   (totalAdjusted > 0 ? ` Â· advance adjusted à§³${totalAdjusted.toFixed(2)}` : ""),
+          action: "ADVANCE_GIVEN",
+          entityType: "AdvanceLog",
+          entityId: log.id,
+          actorName: actor.name,
+          actorRole: actor.role,
+          summary: `Advance ৳${amount.toFixed(2)} given to ${updatedStaff.fullName ?? staffId}`,
+          after: { staffId, amount, advanceId: log.id, note, idempotencyKey: idemKey } as any,
         },
       });
 
-      return { payments: paymentRows, batchId };
+      const st = await getStaffAdvanceState(tx as any, staffId);
+      // keep Staff.advance cache consistent with derived outstanding (ledger source of truth)
+      await tx.staff.update({ where: { employeeId: staffId }, data: { advance: st.outstandingAdvance } });
+      return { ok: true, advanceId: log.id, staffId, amount, balance: st.outstandingAdvance, outstandingAdvance: st.outstandingAdvance, skippedDuplicate: false, reason: null as any };
     });
 
     return Response.json(result);
   } catch (err) {
-    if (err instanceof PaymentAlreadyPaidError) {
-      return Response.json({ error: "Already paid" }, { status: 409 });
-    }
-    // Belt-and-braces: the DB unique constraint on Payment.sessionId is the
-    // final authority â€” surface a duplicate insert as a clean 409 too.
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      return Response.json({ error: "Already paid" }, { status: 409 });
-    }
-    return dbErrorResponse(err);
+    return advanceErrorResponse(err);
   }
 }
-// POST /api/advance — Give an advance (অগ্রিম) to a staff member.
-// ---------------------------------------------------------------------------
-const AdvanceSchema = z.object({
-  staffId: z.string().min(1),
-  amount: z.number().positive(),
-  createdBy: z.string().min(1),
-  note: z.string().optional(),
+
+const AdvanceAdjustSchema = z.object({
+  staffId: z.string().trim().min(1),
+  advanceLogId: z.string().trim().min(1),
+  payrollEarningId: z.string().trim().min(1),
+  amount: z.number().positive().finite(),
+  idempotencyKey: z.string().trim().min(1).max(255),
+  note: z.string().trim().max(1000).optional(),
 });
 
-export async function POST_advance(req: Request) {
-  if (!sessionFromRequest(req)) return Response.json({ error: "Authentication required" }, { status: 401 });
-  const body = AdvanceSchema.safeParse(await req.json());
-  if (!body.success) return Response.json({ error: "Invalid payload" }, { status: 400 });
-
+export async function POST_adjust(req: Request) {
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
+  let raw: unknown;
+  try { raw = await req.json(); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
+  const body = AdvanceAdjustSchema.safeParse(raw);
+  if (!body.success) return Response.json({ error: "Invalid payload", issues: body.error.flatten().fieldErrors }, { status: 400 });
   try {
-    const staff = await prisma.staff.findUnique({ where: { employeeId: body.data.staffId } });
-    if (!staff) return Response.json({ error: "Staff not found" }, { status: 404 });
-
-    const newBalance = payRound(staff.advance + body.data.amount);
-
-    await prisma.$transaction([
-      prisma.staff.update({
-        where: { employeeId: body.data.staffId },
-        data: { advance: newBalance },
-      }),
-      prisma.advanceLog.create({
-        data: {
-          staffId: body.data.staffId, type: "GIVEN", amount: payRound(body.data.amount),
-          balanceAfter: newBalance, note: body.data.note, createdBy: body.data.createdBy,
-        },
-      }),
-      prisma.auditLog.create({
-        data: {
-          action: "ADVANCE_GIVEN", entityType: "Staff", entityId: body.data.staffId,
-          actorName: body.data.createdBy, actorRole: "SUPERVISOR",
-          summary: `Advance ৳${body.data.amount.toFixed(2)} given to ${staff.fullName}`,
-        },
-      }),
-    ]);
-
-    return Response.json({ ok: true, balance: newBalance });
+    const result = await prisma.$transaction((tx) => createAdvanceAdjustment(tx as any, {
+      staffId: body.data.staffId,
+      advanceLogId: body.data.advanceLogId,
+      payrollEarningId: body.data.payrollEarningId,
+      amount: body.data.amount,
+      idempotencyKey: body.data.idempotencyKey,
+      note: body.data.note ?? null,
+      actor: { name: actor.name, role: actor.role },
+    }));
+    return Response.json(result);
   } catch (err) {
-    return dbErrorResponse(err);
+    return advanceErrorResponse(err);
   }
 }
 
+export async function GET_advance(req: Request) {
+  const actor = sessionFromRequest(req);
+  if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
+  if (actor.role !== "ADMIN" && actor.role !== "SUPERVISOR") return Response.json({ error: "Admin or Supervisor access required" }, { status: 403 });
+  const url = new URL(req.url);
+  const staffId = (url.searchParams.get("staffId") || "").trim();
+  try {
+    const db = prisma as any;
+    const whereLog = staffId ? { staffId } : {};
+    const whereAdj = staffId ? { staffId } : {};
+    const [state, logs, adjustments, eligible] = await Promise.all([
+      staffId ? getStaffAdvanceState(db, staffId) : Promise.resolve(null),
+      db.advanceLog.findMany({ where: whereLog, orderBy: { createdAt: "desc" }, take: 200, select: { id: true, staffId: true, type: true, amount: true, balanceAfter: true, note: true, createdAt: true, createdBy: true, paymentId: true } }),
+      db.advanceAdjustment.findMany({ where: whereAdj, orderBy: { adjustedAt: "desc" }, take: 200, select: { id: true, staffId: true, advanceLogId: true, payrollEarningId: true, amount: true, note: true, adjustedAt: true, adjustedBy: true, idempotencyKey: true, workDate: true } }),
+      staffId ? getEligibleEarningsForStaff(db, staffId) : Promise.resolve([]),
+    ]);
+    const staffIds = Array.from(new Set([...logs.map((l: any) => String(l.staffId)), ...adjustments.map((a: any) => String(a.staffId)), ...(staffId ? [staffId] : [])]));
+    const staffRows = staffIds.length ? await db.staff.findMany({ where: { employeeId: { in: staffIds } }, select: { employeeId: true, fullName: true } }) : [];
+    const name = new Map<string, string>(staffRows.map((s: any) => [String(s.employeeId), String(s.fullName ?? s.employeeId)] as [string,string]));
+    return Response.json({
+      ok: true,
+      staffId: staffId || null,
+      state,
+      eligibleEarnings: eligible,
+      advanceLogs: logs.map((l: any) => ({ id: String(l.id), staffId: String(l.staffId), staffName: name.get(String(l.staffId)) ?? String(l.staffId), type: String(l.type), amount: payRound(Number(l.amount) || 0), balanceAfter: l.balanceAfter, note: l.note ?? null, createdAt: (l.createdAt instanceof Date ? l.createdAt : new Date(l.createdAt)).toISOString(), createdBy: l.createdBy ?? null, paymentId: l.paymentId ?? null })),
+      adjustments: adjustments.map((a: any) => ({ id: String(a.id), staffId: String(a.staffId), staffName: name.get(String(a.staffId)) ?? String(a.staffId), advanceLogId: String(a.advanceLogId), payrollEarningId: String(a.payrollEarningId), amount: payRound(Number(a.amount) || 0), note: a.note ?? null, adjustedAt: (a.adjustedAt instanceof Date ? a.adjustedAt : new Date(a.adjustedAt)).toISOString(), adjustedBy: a.adjustedBy ?? null, idempotencyKey: String(a.idempotencyKey), workDate: a.workDate ?? null })),
+    });
+  } catch (err) {
+    return advanceErrorResponse(err);
+  }
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -602,10 +631,27 @@ function sessionShiftProps(
   return { startMin: sh * 60 + sm, endMin: eh * 60 + em };
 }
 
-/** The staff's current shift as (startMin, endMin, startTime, endTime). */
-function staffShiftSnapshot(staff: { shiftStart: string; shiftEnd: string }) {
+/** The staff's current shift and pay snapshots at clock-in (historical fidelity). */
+function staffShiftSnapshot(staff: {
+  shiftStart: string; shiftEnd: string;
+  salaryType?: string; dailyRate?: number | null; baseSalary?: number | null; hourlyRate?: number | null;
+  dailyDutyHours?: number | null;
+}) {
   const { startMin, endMin } = sessionShiftProps(staff, null);
-  return { shiftStartMin: startMin, shiftEndMin: endMin, shiftStartTime: staff.shiftStart, shiftEndTime: staff.shiftEnd };
+  const duty = staff.dailyDutyHours && staff.dailyDutyHours > 0 ? staff.dailyDutyHours : 8;
+  const st = staff.salaryType ?? "DAILY";
+  const dailySalary = (st === "HOURLY" || st === "Hourly") ? 0
+    : (st === "DAILY" || st === "Daily") ? (staff.dailyRate ?? 0)
+    : (st === "WEEKLY" || st === "Weekly") ? (staff.baseSalary ?? 0) / 7
+    : (st === "MONTHLY" || st === "Monthly") ? (staff.baseSalary ?? 0) / 30
+    : (staff.dailyRate ?? 0);
+  const hourlyRateSnapshot = (st === "HOURLY" || st === "Hourly") ? (staff.hourlyRate ?? 0) : (duty > 0 ? dailySalary / duty : 0);
+  return {
+    shiftStartMin: startMin, shiftEndMin: endMin, shiftStartTime: staff.shiftStart, shiftEndTime: staff.shiftEnd,
+    dailySalarySnapshot: dailySalary,
+    dailyDutyHoursSnapshot: duty,
+    hourlyRateSnapshot,
+  };
 }
 
 async function loadConfig(): Promise<Record<string, string>> {
@@ -632,6 +678,8 @@ function isWithinShiftWindow(now: Date, shiftStart: string, shiftEnd: string, co
   const earlyCheckin = configNumber(config, "EARLY_CHECKIN_MINUTES", 5);
   const [sh, sm] = parseShiftTime(shiftStart);
   const [eh, em] = parseShiftTime(shiftEnd);
+  // Early clock-in allowed up to exactly configured grace before scheduled Duty Start (default 5m).
+  // Pre-duty minutes are not payable (enforced in canonical payroll calc), but clock-in is permitted in-window.
   let startMinute = (sh * 60 + sm) - earlyCheckin;
   if (startMinute < 0) startMinute += 24 * 60;
   const endMinute = eh * 60 + em;
@@ -699,3 +747,4 @@ async function saveSession(id: string, data: object, actor: AuthSession, managed
     },
   });
 }
+
