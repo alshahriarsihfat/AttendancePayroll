@@ -5,11 +5,11 @@ vi.mock("@/lib/auth-session", () => ({ sessionFromRequest: vi.fn() }));
 vi.mock("@/server/db", () => ({ prisma: { __prisma: true } }));
 vi.mock("@/lib/auto-clockout-service", () => ({ processAutoClockouts: vi.fn() }));
 
-import { GET, POST } from "./route";
+import { POST } from "./route";
 import { sessionFromRequest } from "@/lib/auth-session";
 import { processAutoClockouts } from "@/lib/auto-clockout-service";
 
-function req(url: string, headers: Record<string, string> = {}, method = "GET") {
+function req(url: string, headers: Record<string, string> = {}, method = "POST") {
   return new Request(url, { method, headers });
 }
 
@@ -18,9 +18,9 @@ const emptyResult = { ok: true, ranAt: "x", now: "y", autoClockoutMinutes: 15, s
 describe("auto-clockout route auth", () => {
   beforeEach(() => { vi.clearAllMocks(); delete (process.env as any).CRON_SECRET; });
 
-  it("rejects unauthorized without secret/session", async () => {
+  it("rejects unauthorized without token/session", async () => {
     (sessionFromRequest as any).mockReturnValue(null);
-    const res = await GET(req("http://localhost/api/attendance/auto-clockout"));
+    const res = await POST(req("http://localhost/api/attendance/auto-clockout"));
     expect(res.status).toBe(401);
   });
 
@@ -32,10 +32,28 @@ describe("auto-clockout route auth", () => {
     expect(res.status).toBe(200);
   });
 
+  it("rejects an incorrect Bearer token", async () => {
+    (sessionFromRequest as any).mockReturnValue(null);
+    process.env.CRON_SECRET = "s3cret";
+    (processAutoClockouts as any).mockResolvedValue(emptyResult);
+    const res = await POST(req("http://localhost/api/attendance/auto-clockout", { authorization: "Bearer wrong" }, "POST"));
+    expect(res.status).toBe(401);
+    expect(processAutoClockouts).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when CRON_SECRET is missing (no session)", async () => {
+    (sessionFromRequest as any).mockReturnValue(null);
+    delete (process.env as any).CRON_SECRET;
+    (processAutoClockouts as any).mockResolvedValue(emptyResult);
+    const res = await POST(req("http://localhost/api/attendance/auto-clockout", { authorization: "Bearer anything" }, "POST"));
+    expect(res.status).toBe(401);
+    expect(processAutoClockouts).not.toHaveBeenCalled();
+  });
+
   it("accepts authenticated ADMIN session without secret", async () => {
     (sessionFromRequest as any).mockReturnValue({ role: "ADMIN", name: "A" });
     (processAutoClockouts as any).mockResolvedValue(emptyResult);
-    const res = await GET(req("http://localhost/api/attendance/auto-clockout"));
+    const res = await POST(req("http://localhost/api/attendance/auto-clockout", {}, "POST"));
     expect(res.status).toBe(200);
   });
 });

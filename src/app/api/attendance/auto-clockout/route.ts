@@ -20,10 +20,10 @@ function authorized(request: Request): boolean {
   const auth = request.headers.get("authorization") || "";
   const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
 
-  // Preferred: server-side cron secret (e.g. Vercel Cron Authorization: Bearer <CRON_SECRET>).
-  if (secret) {
-    if (bearer && safeEqual(bearer, secret)) return true;
-  }
+  // External scheduler path: requires a configured CRON_SECRET matched
+  // constant-time against the Bearer token. If CRON_SECRET is not configured
+  // the cron path is fail-closed (never authorize via Bearer when unset).
+  if (secret && bearer && safeEqual(bearer, secret)) return true;
 
   // Manual/operational trigger: authenticated Admin/Supervisor session (no secrets exposed to browser).
   const actor = sessionFromRequest(request);
@@ -72,5 +72,4 @@ async function handle(request: Request) {
   }
 }
 
-export async function GET(request: Request) { return handle(request); }
 export async function POST(request: Request) { return handle(request); }

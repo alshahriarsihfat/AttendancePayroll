@@ -67,6 +67,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // External scheduler entry point: authenticated only by the route-level
+  // Bearer CRON_SECRET check (and Admin/Supervisor sessions). Exempt this exact
+  // path from the cookie gate so an external scheduler can call it; the route
+  // still enforces authorization. No other /api route is exempted.
+  if (pathname === "/api/attendance/auto-clockout") {
+    return NextResponse.next();
+  }
+
   if (pathname === "/login") {
     if (session) {
       const safe = sanitizeReturnToInternal(request.nextUrl.searchParams.get("returnTo"));
