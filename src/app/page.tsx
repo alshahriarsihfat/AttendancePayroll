@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+﻿import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { AppContent } from "../App";
 import { COOKIE_NAME, decodeSession } from "@/lib/auth-session";

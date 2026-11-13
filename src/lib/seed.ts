@@ -4,7 +4,7 @@ import type {
 } from "../types";
 import { DEFAULT_CONFIG } from "./config";
 import { uid } from "./utils";
-import { isoDate, workingDaysBetween } from "./dates";
+import { isoDate, inclusiveCalendarDays } from "./dates";
 import { parseTime12 } from "./timeclock";
 
 // ============================================================================
@@ -14,10 +14,10 @@ import { parseTime12 } from "./timeclock";
 
 function shifts(): Shift[] {
   return [
-    { id: "SH-FULL", name: "Full Day 9AM–8PM", startTime: "09:00 AM", endTime: "08:00 PM", mealBreakMin: 30, restMin: 15, color: "#6366f1" },
-    { id: "SH-MORN", name: "Morning 9AM–4PM", startTime: "09:00 AM", endTime: "04:00 PM", mealBreakMin: 30, restMin: 15, color: "#10b981" },
-    { id: "SH-EVEN", name: "Evening 2PM–11PM", startTime: "02:00 PM", endTime: "11:00 PM", mealBreakMin: 30, restMin: 15, color: "#f59e0b" },
-    { id: "SH-NIGHT", name: "Night Shift", startTime: "08:00 PM", endTime: "11:00 PM", mealBreakMin: 30, restMin: 15, color: "#8b5cf6" },
+    { id: "SH-9-9", name: "Full Day 9AM–9PM", startTime: "09:00 AM", endTime: "09:00 PM", mealBreakMin: 30, restMin: 15, color: "#6366f1" },
+    { id: "SH-11-11", name: "Full Day 11AM–11PM", startTime: "11:00 AM", endTime: "11:00 PM", mealBreakMin: 30, restMin: 15, color: "#10b981" },
+    { id: "SH-NON", name: "Non Resident 10AM–9PM", startTime: "10:00 AM", endTime: "09:00 PM", mealBreakMin: 30, restMin: 15, color: "#f59e0b" },
+    { id: "SH-CUSTOM", name: "Custom Shift", startTime: "09:00 AM", endTime: "08:00 PM", mealBreakMin: 30, restMin: 15, color: "#8b5cf6" },
   ];
 }
 
@@ -26,7 +26,7 @@ function departments(): Department[] {
     { id: "DEP-PHAR", name: "Pharmacy Counter", costCenter: "CC-100" },
     { id: "DEP-CASH", name: "Cash Counter", costCenter: "CC-200" },
     { id: "DEP-INV", name: "Inventory / Stock", costCenter: "CC-300" },
-    { id: "DEP-DEL", name: "Delivery", costCenter: "CC-400" },
+    { id: "DEP-ORD", name: "Order", costCenter: "CC-400" },
     { id: "DEP-MGMT", name: "Management", costCenter: "CC-500" },
   ];
 }
@@ -39,16 +39,16 @@ interface StaffSeed {
 }
 
 const STAFF_SEED: StaffSeed[] = [
-  { id: "KP9820", name: "Rahim Uddin", phone: "+8801711000020", email: "rahim@khanpharma.bd", dept: "Pharmacy Counter", section: "Sales Floor", counter: 1, title: "Supervising Pharmacist", join: "1998-06-10", role: "SUPERVISOR", salary: "Monthly", monthly: 42000, shiftStart: "09:00 AM", shiftEnd: "08:00 PM", status: "Active" },
-  { id: "KP9821", name: "Karim Hossain", phone: "+8801711000021", dept: "Pharmacy Counter", section: "Sales Floor", counter: 2, title: "Pharmacist", join: "2010-03-01", role: "STAFF", salary: "Monthly", monthly: 32000, shiftStart: "09:00 AM", shiftEnd: "08:00 PM", status: "On-leave" },
-  { id: "KP9822", name: "Salma Begum", phone: "+8801711000022", dept: "Cash Counter", section: "Billing", counter: null, title: "Cashier", join: "2012-01-20", role: "STAFF", salary: "Daily", daily: 1100, shiftStart: "09:00 AM", shiftEnd: "04:00 PM", status: "Active" },
-  { id: "KP9823", name: "Jamal Ahmed", phone: "+8801711000023", dept: "Pharmacy Counter", section: "Dispensary", counter: 3, title: "Pharmacy Assistant", join: "2014-11-05", role: "STAFF", salary: "Daily", daily: 950, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
-  { id: "KP9824", name: "Fatima Akter", phone: "+8801711000024", email: "fatima@khanpharma.bd", dept: "Pharmacy Counter", section: "Dispensary", counter: 4, title: "Pharmacy Assistant", join: "2017-04-18", role: "STAFF", salary: "Hourly", hourly: 95, shiftStart: "09:00 AM", shiftEnd: "04:00 PM", status: "Active" },
-  { id: "KP9825", name: "Nahid Hasan", phone: "+8801711000025", dept: "Delivery", section: "Dispatch", counter: null, title: "Delivery Rider", join: "2019-09-01", role: "STAFF", salary: "Daily", daily: 700, shiftStart: "10:00 AM", shiftEnd: "06:00 PM", status: "Active" },
-  { id: "KP9826", name: "Rumana Yesmin", phone: "+8801711000026", dept: "Cash Counter", section: "Billing", counter: null, title: "Cashier", join: "2020-06-15", role: "STAFF", salary: "Monthly", monthly: 22000, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
-  { id: "KP9827", name: "Selim Reza", phone: "+8801711000027", dept: "Pharmacy Counter", section: "Sales Floor", counter: 5, title: "Sales Staff", join: "2021-02-10", role: "STAFF", salary: "Hourly", hourly: 80, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
-  { id: "KP9828", name: "Anwar Hossain", phone: "+8801711000028", dept: "Inventory / Stock", section: "Store Room", counter: null, title: "Stock In-Charge", join: "2015-10-08", role: "STAFF", salary: "Monthly", monthly: 28000, shiftStart: "09:00 AM", shiftEnd: "06:00 PM", status: "Active" },
-  { id: "KP9829", name: "Tasnim Jahan", phone: "+8801711000029", dept: "Pharmacy Counter", section: "Sales Floor", counter: 6, title: "Trainee", join: "2024-01-15", role: "STAFF", salary: "Daily", daily: 600, shiftStart: "09:00 AM", shiftEnd: "04:00 PM", status: "Active" },
+  { id: "KP9820", name: "Shakbir Khan", phone: "+8801711000020", email: "rahim@khanpharma.bd", dept: "Pharmacy Counter", section: "Sales Floor", counter: 1, title: "Supervising Pharmacist", join: "1998-06-10", role: "SUPERVISOR", salary: "Monthly", monthly: 42000, shiftStart: "09:00 AM", shiftEnd: "08:00 PM", status: "Active" },
+  { id: "KP9821", name: "Rayhan Amin", phone: "+8801711000021", dept: "Pharmacy Counter", section: "Sales Floor", counter: 2, title: "Pharmacist", join: "2010-03-01", role: "STAFF", salary: "Monthly", monthly: 32000, shiftStart: "09:00 AM", shiftEnd: "08:00 PM", status: "On-leave" },
+  { id: "KP9822", name: "Mintu Sarker", phone: "+8801711000022", dept: "Cash Counter", section: "Billing", counter: null, title: "Cashier", join: "2012-01-20", role: "STAFF", salary: "Daily", daily: 1100, shiftStart: "09:00 AM", shiftEnd: "04:00 PM", status: "Active" },
+  { id: "KP9823", name: "Nironjon Das", phone: "+8801711000023", dept: "Pharmacy Counter", section: "Dispensary", counter: 3, title: "Pharmacy Assistant", join: "2014-11-05", role: "STAFF", salary: "Daily", daily: 950, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
+  { id: "KP9824", name: "Jnan Chandra Das", phone: "+8801711000024", email: "fatima@khanpharma.bd", dept: "Pharmacy Counter", section: "Dispensary", counter: 4, title: "Pharmacy Assistant", join: "2017-04-18", role: "STAFF", salary: "Hourly", hourly: 95, shiftStart: "09:00 AM", shiftEnd: "04:00 PM", status: "Active" },
+  { id: "KP9825", name: "Bisshojith Chandra Deb", phone: "+8801711000025", dept: "Delivery", section: "Dispatch", counter: null, title: "Delivery Rider", join: "2019-09-01", role: "STAFF", salary: "Daily", daily: 700, shiftStart: "10:00 AM", shiftEnd: "06:00 PM", status: "Active" },
+  { id: "KP9826", name: "Abdul Amin", phone: "+8801711000026", dept: "Cash Counter", section: "Billing", counter: null, title: "Cashier", join: "2020-06-15", role: "STAFF", salary: "Monthly", monthly: 22000, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
+  { id: "KP9827", name: "MD. Al Amin", phone: "+8801711000027", dept: "Pharmacy Counter", section: "Sales Floor", counter: 5, title: "Sales Staff", join: "2021-02-10", role: "STAFF", salary: "Hourly", hourly: 80, shiftStart: "02:00 PM", shiftEnd: "11:00 PM", status: "Active" },
+  { id: "KP9828", name: "MD. Ihsan Ahmed Sayef", phone: "+8801711000028", dept: "Inventory / Stock", section: "Store Room", counter: null, title: "Stock In-Charge", join: "2015-10-08", role: "STAFF", salary: "Monthly", monthly: 28000, shiftStart: "09:00 AM", shiftEnd: "06:00 PM", status: "Active" },
+  { id: "KP9829", name: "Alauddin", phone: "+8801711000029", dept: "Pharmacy Counter", section: "Sales Floor", counter: 6, title: "Certified Pharmacy Technician", join: "2024-01-15", role: "STAFF", salary: "Daily", daily: 300, shiftStart: "09:00 AM", shiftEnd: "08:00 PM", status: "Active" },
 ];
 
 function buildStaff(): Employee[] {
@@ -164,7 +164,7 @@ function buildLeave(staff: Employee[], hol: Holiday[]): { requests: LeaveRequest
 
   const add = (staffId: string, type: LeaveRequest["leaveType"], fromISO: string, span: number, status: LeaveRequest["status"], reason: string) => {
     const toISO = isoDate(new Date(new Date(fromISO).getTime() + (span - 1) * 86400000));
-    const days = workingDaysBetween(fromISO, toISO, hol);
+    const days = inclusiveCalendarDays(fromISO, toISO);
     requests.push({
       recordId: uid("LV"), staffId, leaveType: type, fromDate: fromISO, toDate: toISO, days, reason, status,
       approvedBy: status === "Approved" ? "Admin" : null,
@@ -182,8 +182,9 @@ function buildLeave(staff: Employee[], hol: Holiday[]): { requests: LeaveRequest
     const used = (type: LeaveRequest["leaveType"]) =>
       requests.filter((r) => r.staffId === s.employeeId && r.leaveType === type && r.status === "Approved" && new Date(r.fromDate).getFullYear() === year)
         .reduce((sum, r) => sum + r.days, 0);
-    balances.push({ staffId: s.employeeId, leaveType: "Annual", entitledDays: 20, usedDays: used("Annual"), year });
-    balances.push({ staffId: s.employeeId, leaveType: "Sick", entitledDays: 14, usedDays: used("Sick"), year });
+    balances.push({ staffId: s.employeeId, leaveType: "Annual", entitledDays: 6, usedDays: used("Annual"), year });
+    balances.push({ staffId: s.employeeId, leaveType: "Sick", entitledDays: 3, usedDays: used("Sick"), year });
+    balances.push({ staffId: s.employeeId, leaveType: "Earned", entitledDays: 0, usedDays: used("Earned"), year });
     balances.push({ staffId: s.employeeId, leaveType: "Casual", entitledDays: 10, usedDays: used("Casual"), year });
   }
   return { requests, balances };

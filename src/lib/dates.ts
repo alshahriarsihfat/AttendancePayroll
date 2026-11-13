@@ -190,7 +190,16 @@ export function workingDaysInMonth(
   return count;
 }
 
-/** Working days between two inclusive ISO dates (for leave). */
+/** Inclusive calendar days between two ISO dates (no weekends/holidays excluded). Khan Pharmacy policy. */
+export function inclusiveCalendarDays(fromISO: string, toISO: string): number {
+  if (!fromISO || !toISO) return 0;
+  const from = parseISO(fromISO);
+  const to = parseISO(toISO);
+  if (to < from) return 0;
+  return Math.floor((to.getTime() - from.getTime()) / 86400000) + 1;
+}
+
+/** @deprecated Working-days logic kept for compatibility; leave uses inclusiveCalendarDays. */
 export function workingDaysBetween(
   fromISO: string,
   toISO: string,

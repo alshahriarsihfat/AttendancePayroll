@@ -21,9 +21,17 @@ async function ensureConfig() {
   return prisma.config.findMany({ orderBy: { key: "asc" } });
 }
 
-export async function GET() {
+const SENSITIVE_CONFIG_KEY = /(KEY|SECRET|TOKEN|PASSWORD|API_URL)/i;
+
+export async function GET(request: Request) {
+  const session = sessionFromRequest(request);
+  if (!session) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
-    return Response.json({ config: await ensureConfig() });
+    const config = await ensureConfig();
+    const visible = session.role === "ADMIN"
+      ? config
+      : config.filter((entry) => !SENSITIVE_CONFIG_KEY.test(entry.key));
+    return Response.json({ config: visible });
   } catch (error) {
     return dbErrorResponse(error);
   }

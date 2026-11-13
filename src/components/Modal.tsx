@@ -52,8 +52,8 @@ export function Modal({ open, onClose, title, subtitle, icon, children, footer, 
             <IconButton icon="x" label="Close" onClick={onClose} className="shrink-0" />
           </div>
         )}
-        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-5">{children}</div>
-        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-edge bg-surface-muted px-4 py-3 sm:px-5">{footer}</div>}
+        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-5 sm:py-5">{children}</div>
+        {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-edge bg-surface-muted px-4 py-3 sm:px-5 sm:py-4">{footer}</div>}
       </div>
     </div>
   );

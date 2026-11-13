@@ -299,7 +299,7 @@ const shiftStartMs = shift ? scheduledShiftBounds(new Date().toISOString(), shif
                     <p className="text-xs font-semibold uppercase tracking-widest opacity-80">On Duty</p>
                     <p className="mt-3 text-5xl font-bold tabular-nums tracking-tight">{formatElapsed(flushedSess ? now - new Date(flushedSess.timeIn).getTime() : 0)}</p>
                     <p className="mt-2 text-sm opacity-80">Since {formatTime12(flushedSess?.timeIn)}</p>
-                    {flushedCalc.extraTimeActive && <p className="mt-1 inline-block rounded-md bg-white/20 px-2 py-0.5 text-xs font-semibold">⚡ Extra Time ON</p>}
+                    {flushedSess?.overtimeActivatedAt && !flushedSess.timeOut && <p className="mt-1 inline-block rounded-md bg-white/20 px-2 py-0.5 text-xs font-semibold">OVERTIME RUNNING · {formatDuration(Math.max(0, (now - new Date(String(flushedSess.overtimeActivatedAt)).getTime()) / 60000))}</p>}
                   </>
                 )}
                 {flushedCalc.lateMin > 0 && !isOffFlushed && !isDoneFlushed && <p className="mt-2 inline-block rounded-md bg-white/15 px-2 py-0.5 text-xs">⏰ {formatDuration(flushedCalc.lateMin)} late</p>}
@@ -317,11 +317,9 @@ const shiftStartMs = shift ? scheduledShiftBounds(new Date().toISOString(), shif
                     <button onClick={() => void withRefresh(() => startBreak(staff.employeeId, "unpaid"))} className="flex flex-col items-center gap-1 rounded-xl bg-rose-500 py-3.5 font-bold text-white shadow-md shadow-rose-200 transition hover:bg-rose-600 active:scale-[0.99]"><Icon name="pause" size={20} /> Unpaid<span className="text-[10px] font-normal opacity-90">deducted</span></button>
                   </div>
                   <button onClick={() => setGoOutOpen(true)} className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 py-3 font-bold text-white shadow-md shadow-violet-200 transition hover:bg-violet-600 active:scale-[0.99]"><Icon name="arrowRight" size={18} /> Paid Go-Out<span className="text-[11px] font-normal opacity-90">field work · no deduction</span></button>
-                  <button onClick={() => void withRefresh(() => toggleExtraTime(staff.employeeId))} className={cn("flex w-full items-center justify-between rounded-xl border-2 px-4 py-3 font-bold transition active:scale-[0.99]", flushedCalc.extraTimeActive ? "border-primary bg-primary-soft text-primary" : "border-edge bg-surface text-muted-foreground hover:bg-surface-muted")}>
-                    <span className="flex items-center gap-2"><Icon name="trendUp" size={18} /> Extra Time</span>
-                    <span className={cn("relative h-6 w-11 rounded-full transition", flushedCalc.extraTimeActive ? "bg-primary" : "bg-white/25")}>
-                      <span className={cn("absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-all", flushedCalc.extraTimeActive ? "left-[22px]" : "left-0.5")} />
-                    </span>
+                  <button onClick={() => void withRefresh(() => toggleExtraTime(staff.employeeId))} disabled={!!flushedSess?.overtimeActivatedAt} className={cn("flex w-full items-center justify-between rounded-xl border-2 px-4 py-3 font-bold transition active:scale-[0.99] disabled:opacity-70", flushedSess?.overtimeActivatedAt ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300" : "border-edge bg-surface text-muted-foreground hover:bg-surface-muted")}>
+                    <span className="flex items-center gap-2"><Icon name="trendUp" size={18} /> {flushedSess?.overtimeActivatedAt ? `OVERTIME RUNNING${flushedSess.overtimeActivatedAt ? ` · ${formatDuration(Math.max(0, (now - new Date(String(flushedSess.overtimeActivatedAt)).getTime()) / 60000))}` : ""}` : "Extra Time"}</span>
+                    <span className="text-xs font-semibold opacity-80">{flushedSess?.overtimeActivatedAt ? "Ends on clock-out" : "Supervisor activates after duty end"}</span>
                   </button>
                 </>
               )}
@@ -339,7 +337,7 @@ const shiftStartMs = shift ? scheduledShiftBounds(new Date().toISOString(), shif
                   for "working" and every break status, so the Clock Out
                   button never rendered during an active shift. */}
               {(flushedCalc.clockStatus === "working" || flushedCalc.clockStatus === "on-meal" || flushedCalc.clockStatus === "on-rest" || flushedCalc.clockStatus === "on-unpaid" || flushedCalc.clockStatus === "on-goout") && (
-                <button disabled={clockActionBusy} onClick={() => { setOutConfirm(true); }} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 py-3.5 font-bold text-white transition hover:bg-slate-900 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"><Icon name="power" size={20} /> {clockActionBusy ? "Processing..." : "Clock Out"}</button>
+                <button disabled={clockActionBusy} onClick={() => { setOutConfirm(true); }} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 py-3.5 font-bold text-white transition hover:bg-slate-900 active:scale-[0.99] disabled:cursor-wait disabled:opacity-60"><Icon name="power" size={20} /> {clockActionBusy ? "Processing..." : (flushedSess?.overtimeActivatedAt ? "Clock Out (End Overtime)" : "Clock Out")}</button>
               )}
             </div>
 
@@ -350,24 +348,24 @@ const shiftStartMs = shift ? scheduledShiftBounds(new Date().toISOString(), shif
                   <Stat icon="clock" label="Worked" value={formatDuration(flushedCalc.grossMin)} />
                   <Stat icon="meal" label="Meal + Rest" value={formatDuration(flushedCalc.breakMin)} />
                   <Stat icon="alert" label="Over-break" value={formatDuration(flushedCalc.overBreakMin)} tone={flushedCalc.overBreakMin > 0 ? "rose" : "slate"} />
-                  <Stat icon="trendUp" label="Overtime" value={flushedCalc.overtimeMin > 0 ? formatDuration(flushedCalc.overtimeMin) : "—"} tone={flushedCalc.overtimeMin > 0 ? "emerald" : "slate"} />
+                  <Stat icon="trendUp" label={flushedSess?.overtimeActivatedAt && !flushedSess.timeOut ? "OT (running)" : "Overtime"} value={flushedCalc.overtimeMin > 0 ? formatDuration(flushedCalc.overtimeMin) : "—"} tone={flushedCalc.overtimeMin > 0 ? "emerald" : "slate"} />
                 </div>
               </div>
             )}
           </div>
         )}
-{advanceOpen && (
+      {advanceOpen && (
         <Modal open onClose={() => setAdvanceOpen(false)} size="md" title="Give Advance" subtitle={staff.fullName} icon="handCoin"
           footer={<>
             <Button variant="ghost" onClick={() => setAdvanceOpen(false)}>Cancel</Button>
             <Button variant="success" icon="check" disabled={!Number(advanceAmt)}
               onClick={() => { takeAdvance(staff.employeeId, Number(advanceAmt)); setAdvanceOpen(false); }}>Log Advance</Button>
           </>}>
-          <Field label="Advance Amount (৳)" hint="Automatically deducted from the next payout.">
+          <Field label="Advance Amount (৳)" hint="Recorded as a separate advance balance. Never auto-deducted from salary or payout.">
             <Input type="number" value={advanceAmt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAdvanceAmt(e.target.value)} placeholder="e.g. 500" />
           </Field>
           <p className="mt-3 text-center text-xs text-faint-foreground">
-            Current outstanding advance: ৳{(staff.advance ?? 0).toFixed(2)}
+            Current outstanding advance: ৳{(staff.advance ?? 0).toFixed(2)}. Manual adjustment is supervisor-explicit only.
           </p>
         </Modal>
       )}
@@ -446,8 +444,8 @@ function InlineLeave({ staffId, submitLeave }: { staffId: string; submitLeave: R
 
   const mine = data.leaveRequests.filter((r) => r.staffId === staffId).slice(0, 5);
 
-  const submit = () => {
-    const res = submitLeave({ staffId, leaveType: type, fromDate: from, toDate: to, reason });
+  const submit = async () => {
+    const res = await submitLeave({ staffId, leaveType: type, fromDate: from, toDate: to, reason });
     if (res.ok) { setDone(true); setFrom(""); setTo(""); setReason(""); setTimeout(() => setDone(false), 2500); }
   };
 

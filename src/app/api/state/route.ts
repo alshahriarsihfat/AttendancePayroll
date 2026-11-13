@@ -14,7 +14,20 @@ const STATE_KEY = "default";
 type StatePayload = {
   data?: unknown;
   session?: unknown;
+  reset?: boolean;
 };
+
+function isProductionEnvironment(): boolean {
+  const nodeEnv = (process.env.NODE_ENV ?? "").toLowerCase();
+  const appEnv = (process.env.APP_ENV ?? process.env.VERCEL_ENV ?? "").toLowerCase();
+  // Fail closed: only explicitly non-production environments are allowed.
+  if (nodeEnv === "development" || nodeEnv === "test") return false;
+  if (appEnv === "development" || appEnv === "test" || appEnv === "preview") return false;
+  return true;
+}
+
+// Config keys that contain integration secrets. These are never sent to STAFF.
+const STAFF_BLOCKED_CONFIG_KEYS = new Set(["SHEETS_API_KEY", "SHEETS_API_URL"]);
 
 // Static reference collections (departments / shifts / holidays) are not DB
 // tables — they live only in the client-side snapshot. If that snapshot has not
@@ -61,6 +74,11 @@ export async function GET() {
     const visibleApprovals = isStaff ? approvalRows.filter((a) => a.staffId === myId) : approvalRows;
     const visibleAudit = isStaff ? auditRows.filter((l) => l.entityId === myId) : auditRows;
 
+    // Strip integration secrets from config for STAFF role (Vuln 3 fix — config leakage).
+    const visibleConfig = isStaff
+      ? configRows.filter((c) => !STAFF_BLOCKED_CONFIG_KEYS.has(c.key))
+      : configRows;
+
     // "On-leave" is DERIVED from approved leave requests covering today, not
     // from each browser's locally-patched staff.status, so the Attendance grid,
     // Monitor, Dashboard and Staff Management all agree on the SAME staff
@@ -97,9 +115,12 @@ export async function GET() {
             endDate: staff.endDate ? dateKeyInZone(staff.endDate) : null,
             role: staff.role === "SUPERVISOR" ? "SUPERVISOR" : "STAFF",
             salaryType: staff.salaryType.charAt(0) + staff.salaryType.slice(1).toLowerCase(),
+            // Legacy DB columns preserved; 2C.6.2 active earning uses hourlyRate + dailyDutyHours only.
             baseSalary: isStaff ? 0 : staff.baseSalary,
             dailyRate: isStaff ? 0 : staff.dailyRate,
             hourlyRate: isStaff ? 0 : staff.hourlyRate,
+            dailyDutyHours: isStaff ? undefined : staff.dailyDutyHours ?? undefined,
+            workingDaysPerWeek: isStaff ? undefined : staff.workingDaysPerWeek ?? undefined,
             shiftStart: staff.shiftStart,
             shiftEnd: staff.shiftEnd,
             mealBreakMin: staff.mealBreakMin,
@@ -144,6 +165,9 @@ export async function GET() {
             shiftEndMin: s.shiftEndMin ?? null,
             shiftStartTime: s.shiftStartTime ?? null,
             shiftEndTime: s.shiftEndTime ?? null,
+            dailySalarySnapshot: s.dailySalarySnapshot ?? undefined,
+            dailyDutyHoursSnapshot: s.dailyDutyHoursSnapshot ?? undefined,
+            hourlyRateSnapshot: s.hourlyRateSnapshot ?? undefined,
           })),
           payments: visiblePayments.map((p) => ({
             id: p.id,
@@ -205,9 +229,9 @@ export async function GET() {
             summary: l.summary,
             managedBy: l.managedBy ?? null,
           })),
-          config: configRows,
+          config: visibleConfig,
         }
-      : state?.data ? { ...(state.data as object), config: configRows } : { config: configRows };
+      : state?.data ? { ...(state.data as object), config: visibleConfig } : { config: visibleConfig };
     return Response.json({ data });
   } catch (error) {
     return dbErrorResponse(error);
@@ -225,6 +249,16 @@ export async function PUT(request: Request) {
   catch { return Response.json({ error: "Invalid state payload" }, { status: 400 }); }
   if (!payload.data || typeof payload.data !== "object") {
     return Response.json({ error: "Invalid state payload" }, { status: 400 });
+  }
+
+  // Destructive reset/seed replacement is blocked in production and requires admin.
+  if (payload.reset === true) {
+    if (isProductionEnvironment()) {
+      return Response.json({ error: "Reset to seed data is disabled in production" }, { status: 403 });
+    }
+    if (session.role !== "ADMIN") {
+      return Response.json({ error: "Admin access required" }, { status: 403 });
+    }
   }
 
   try {

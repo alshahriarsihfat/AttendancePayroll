@@ -44,47 +44,69 @@ enum AdvanceType {
   ADJUSTED
 }
 
+enum AttendanceStatus {
+  Present
+  ApprovedLeave
+  UnauthorizedAbsence
+  PendingReview
+}
+
+enum OvertimeStatus {
+  NotRequired
+  Pending
+  Approved
+  Rejected
+}
+
 // ---------------------------------------------------------------------------
 // Staff
 // ---------------------------------------------------------------------------
 model Staff {
-  id           String      @id @default(cuid())
-  employeeId   String      @unique // KP9820
-  username     String      @unique
-  password     String // bcrypt hash in production
-  fullName     String
-  email        String?
-  phone        String?
-  department   String
-  jobTitle     String
-  section      String      @default("Sales Floor")
-  counter      Int? // 1–9 (Pharmacy Counter)
-  role         Role        @default(STAFF)
-  salaryType   SalaryType  @default(DAILY)
-  baseSalary   Float       @default(0) // monthly BDT
-  dailyRate    Float       @default(0)
-  hourlyRate   Float       @default(0)
-  shiftStart   String      @default("09:00 AM")
-  shiftEnd     String      @default("08:00 PM")
-  mealBreakMin Int         @default(30)
-  restMin      Int         @default(15)
-  photoUrl     String?
-  status       StaffStatus @default(ACTIVE)
-  isActive     Boolean     @default(true)
-  arrears      Float       @default(0) // owed TO staff
-  advance      Float       @default(0) // owed BY staff (অগ্রিম)
-  joinDate     DateTime
-  endDate      DateTime?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id                 String      @id @default(cuid())
+  employeeId         String      @unique // KP9820
+  username           String      @unique
+  password           String // bcrypt hash in production
+  fullName           String
+  email              String?
+  phone              String?
+  department         String
+  jobTitle           String
+  section            String      @default("Sales Floor")
+  counter            Int? // 1â€“9 (Pharmacy Counter)
+  role               Role        @default(STAFF)
+  salaryType         SalaryType  @default(DAILY)
+  baseSalary         Float       @default(0) // monthly BDT
+  dailyRate          Float       @default(0)
+  hourlyRate         Float       @default(0)
+  dailyDutyHours     Float?
+  /// Additive foundation: configured working days per week (1-7) for WEEKLY denominator. Nullable; validated/app-enforced later. No duplicate daily-hours field.
+  workingDaysPerWeek Int?
+  shiftStart         String      @default("09:00 AM")
+  shiftEnd           String      @default("08:00 PM")
+  mealBreakMin       Int         @default(30)
+  restMin            Int         @default(15)
+  photoUrl           String?
+  status             StaffStatus @default(ACTIVE)
+  isActive           Boolean     @default(true)
+  arrears            Float       @default(0) // owed TO staff
+  advance            Float       @default(0) // owed BY staff (à¦…à¦—à§à¦°à¦¿à¦®)
+  joinDate           DateTime
+  endDate            DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
 
-  sessions      TimeSession[]
-  payments      Payment[]
-  advanceLogs   AdvanceLog[]
-  leaveRequests LeaveRequest[]
-  leaveBalances LeaveBalance[]
-  approvals     ApprovalRequest[]
-  overtimeLogs  OvertimeLog[]
+  sessions           TimeSession[]
+  payments           Payment[]
+  advanceLogs        AdvanceLog[]
+  advanceAdjustments AdvanceAdjustment[]
+  leaveRequests      LeaveRequest[]
+  leaveBalances      LeaveBalance[]
+  approvals          ApprovalRequest[]
+  overtimeLogs               OvertimeLog[]
+  dailyAttendance            DailyAttendance[]            @relation("DailyAttendanceStaff")
+  payrollEarnings            PayrollEarning[]
+  paymentAllocations         PaymentAllocation[]
+  coordinatedPaymentRequests CoordinatedPaymentRequest[]
 
   @@index([isActive, department])
 }
@@ -93,14 +115,20 @@ model Staff {
 // Shift logs (Clock In/Out, Breaks, Field work)
 // ---------------------------------------------------------------------------
 model TimeSession {
-  id             String    @id @default(cuid())
-  staffId        String
-  staff          Staff     @relation(fields: [staffId], references: [employeeId])
-  date           DateTime // shift date (local midnight)
-  timeIn         DateTime
-  timeOut        DateTime?
-  completed      Boolean   @default(false)
-  autoClockedOut Boolean   @default(false) // system closed it
+  id                  String         @id @default(cuid())
+  staffId             String
+  staff               Staff          @relation(fields: [staffId], references: [employeeId])
+  date                DateTime // shift date (local midnight)
+  timeIn              DateTime
+  timeOut             DateTime?
+  completed           Boolean        @default(false)
+  autoClockedOut      Boolean        @default(false) // system closed it
+  lateReason          String?
+  overtimeActivatedAt DateTime?
+  overtimeStatus      OvertimeStatus @default(NotRequired)
+  overtimeApprovedBy  String?
+  overtimeApprovedAt  DateTime?
+  overtimeMinutes     Int            @default(0)
 
   // Shift snapshot captured at clock-in. Historical sessions are judged
   // against THIS shift rather than the live Staff row, so editing an
@@ -112,12 +140,43 @@ model TimeSession {
   shiftStartTime String?
   shiftEndTime   String?
 
+  dailySalarySnapshot    Float?
+  dailyDutyHoursSnapshot Float?
+  hourlyRateSnapshot     Float?
+
+  /// --- Additive payroll foundation snapshots (nullable, no backfill, no behavior in this task) ---
+  /// Salary/period identity captured for auditable calculation. No silent fallback to /7,/30,/26,8.
+  payrollSalaryType             String?
+  payrollApplicableSalary       Float?
+  payrollPeriodKind             String? // e.g. DAILY|WEEKLY|MONTHLY|HOURLY
+  payrollPeriodKey              String? // canonical period identifier (WEEKLY Mon-Sun Asia/Dhaka when applied)
+  payrollPeriodStart            DateTime?
+  payrollPeriodEnd              DateTime?
+  /// WEEKLY denominator snapshot: configured working days/week (1-7). MONTHLY uses calendar days.
+  weeklyWorkingDaysSnapshot     Int?
+  weeklyScheduledHoursSnapshot  Float?
+  monthlyCalendarDaysSnapshot   Int? // actual 28/29/30/31
+  monthlyScheduledHoursSnapshot Float?
+  scheduledDutyHoursSnapshot    Float? // applicable denominator duty-hours snapshot
+  payableHoursSnapshot          Float?
+  payableMinutesSnapshot        Int?
+  grossEarningSnapshot          Float?
+  overtimeEarningSnapshot       Float?
+  deductionSnapshot             Float?
+  netEarningSnapshot            Float?
+  /// Calculation state: missing required config => incomplete (never estimated). No app behavior added here.
+  payrollCalculationStatus      String?
+  payrollIncompleteReason       String?
+  payrollSnapshotAt             DateTime?
+  payrollSnapshotBy             String?
+
   breaks    Json @default("[]")
   goOuts    Json @default("[]")
   extraTime Json @default("[]")
 
-  payments  Payment[]
-  approvals ApprovalRequest[]
+  payments       Payment[]         @relation("PaymentLegacySession")
+  payrollEarning PayrollEarning?
+  approvals      ApprovalRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -125,38 +184,65 @@ model TimeSession {
   @@unique([staffId, date])
   @@index([date])
   @@index([staffId, completed])
+  @@index([payrollPeriodKey])
+  @@index([payrollCalculationStatus])
+}
+
+model DailyAttendance {
+  id              String           @id @default(cuid())
+  staffId         String
+  staff           Staff            @relation(fields: [staffId], references: [employeeId], onDelete: Restrict, name: "DailyAttendanceStaff")
+  date            DateTime         @db.Date
+  status          AttendanceStatus
+  finalized       Boolean          @default(false)
+  finalizedBy     String?
+  finalizedAt     DateTime?
+  systemGenerated Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([staffId, date])
+  @@index([date])
+  @@index([status, finalized])
 }
 
 // ---------------------------------------------------------------------------
 // Payments (Paid + Dues)
 // ---------------------------------------------------------------------------
 model Payment {
-  id                 String        @id @default(cuid())
-  staffId            String
-  staff              Staff         @relation(fields: [staffId], references: [employeeId])
-  sessionId          String?       @unique
-  session            TimeSession?  @relation(fields: [sessionId], references: [id])
-  date               DateTime // shift date
-  paidAt             DateTime // EXACT cash-flow timestamp
-  periodLabel        String
-  dutyHours          Float         @default(0)
-  workedMin          Float         @default(0)
-  breakMin           Float         @default(0)
-  overBreakMin       Float         @default(0)
-  overtimeMin        Float         @default(0)
-  hourlyRate         Float         @default(0)
-  grossPay           Float         @default(0)
-  overtimePay        Float         @default(0)
-  overBreakDeduction Float         @default(0)
-  advanceAdjusted    Float         @default(0) // advance deducted this payout
-  netPay             Float         @default(0) // final cash handed over
-  status             PaymentStatus @default(PAID)
-  paidBy             String // supervisor/admin name
-  createdAt          DateTime      @default(now())
-  // Settlement batch id â€” groups multiple day-wise Payment rows settled as ONE
+  id                        String        @id @default(cuid())
+  staffId                   String
+  staff                     Staff         @relation(fields: [staffId], references: [employeeId])
+  /// Legacy compatibility: preserved 1:1 session link. Do not remove/weaken. New multi-allocation flow uses PaymentAllocation.
+  sessionId                 String?       @unique
+  session                   TimeSession?  @relation("PaymentLegacySession", fields: [sessionId], references: [id])
+  date                      DateTime // shift date
+  paidAt                    DateTime // EXACT cash-flow timestamp
+  periodLabel               String
+  dutyHours                 Float         @default(0)
+  workedMin                 Float         @default(0)
+  breakMin                  Float         @default(0)
+  overBreakMin              Float         @default(0)
+  overtimeMin               Float         @default(0)
+  hourlyRate                Float         @default(0)
+  grossPay                  Float         @default(0)
+  overtimePay               Float         @default(0)
+  overBreakDeduction        Float         @default(0)
+  advanceAdjusted           Float         @default(0) // advance deducted this payout
+  netPay                    Float         @default(0) // final cash handed over
+  status                    PaymentStatus @default(PAID)
+  paidBy                    String // supervisor/admin name
+  createdAt                 DateTime      @default(now())
+  // Settlement batch id — groups multiple day-wise Payment rows settled as ONE
   // transaction (e.g. three unpaid days paid together). NULL for pre-batch
   // rows; the payslip itemizes every day that shares the same batchId.
-  batchId            String?
+  batchId                   String?
+  /// Request-level idempotency for new non-legacy allocation payments (Phase 2A.2). Nullable for legacy rows; never backfilled.
+  idempotencyKey            String?       @unique
+  /// Original requested allocation amount for new non-legacy allocation payments (Phase 2A.6). Nullable for legacy/non-allocation rows; never backfilled.
+  allocationRequestedAmount Float?
+
+  allocations PaymentAllocation[]
 
   @@index([staffId, paidAt])
   @@index([paidAt])
@@ -165,7 +251,7 @@ model Payment {
 }
 
 // ---------------------------------------------------------------------------
-// Advance (অগ্রিম) ledger — full audit trail
+// Advance (à¦…à¦—à§à¦°à¦¿à¦®) ledger â€” full audit trail
 // ---------------------------------------------------------------------------
 model AdvanceLog {
   id           String      @id @default(cuid())
@@ -179,7 +265,47 @@ model AdvanceLog {
   createdBy    String // supervisor/admin
   createdAt    DateTime    @default(now())
 
+  /// Additive auditable linkage for future explicit adjustment workflow (default OFF, no auto deduction in this task).
+  paymentAllocationId String?
+  paymentAllocation   PaymentAllocation? @relation("AdvanceLogPaymentAllocation", fields: [paymentAllocationId], references: [id], onDelete: SetNull)
+  idempotencyKey      String?
+
+  adjustments AdvanceAdjustment[]
+
+  @@unique([idempotencyKey])
   @@index([staffId, createdAt])
+  @@index([paymentAllocationId])
+}
+
+/// Manual advance adjustment ledger (append-only). Explicit, authorized adjustment of an outstanding advance against a specific eligible accrued earning.
+/// Outstanding advance and remaining eligible earning are derived from immutable/append-only records (never mutable sole balance fields).
+model AdvanceAdjustment {
+  id               String         @id @default(cuid())
+  staffId          String
+  staff            Staff          @relation(fields: [staffId], references: [employeeId], onDelete: Restrict)
+  advanceLogId     String
+  advanceLog       AdvanceLog     @relation(fields: [advanceLogId], references: [id], onDelete: Restrict)
+  payrollEarningId String
+  payrollEarning   PayrollEarning @relation(fields: [payrollEarningId], references: [id], onDelete: Restrict)
+
+  amount         Float // positive, confirmed adjustment amount
+  idempotencyKey String   @unique
+  note           String?
+  adjustedBy     String // authorized actor name
+  adjustedByRole String? // authorized actor role
+  adjustedAt     DateTime @default(now()) // creation/confirmation timestamp
+
+  // Audit/context snapshots (append-only record metadata)
+  workDate           String? // earning work date (Asia/Dhaka YYYY-MM-DD) snapshot for audit/reporting
+  requestFingerprint String? // deterministic hash/fingerprint of request payload for idempotency-mismatch detection
+
+  createdAt DateTime @default(now())
+
+  @@index([staffId, adjustedAt])
+  @@index([staffId, advanceLogId])
+  @@index([staffId, payrollEarningId])
+  @@index([payrollEarningId])
+  @@index([advanceLogId])
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +380,101 @@ model ApprovalRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Payroll foundation (additive, TEST-only migration; no app behavior/backfill in this task)
+// ---------------------------------------------------------------------------
+/// Immutable per-session earning ledger. One earning per TimeSession. paid/remaining are DERIVED from allocations (not stored as authoritative mutable fields).
+model PayrollEarning {
+  id        String      @id @default(cuid())
+  sessionId String      @unique
+  session   TimeSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  staffId   String
+  staff     Staff       @relation(fields: [staffId], references: [employeeId], onDelete: Restrict)
+
+  /// Snapshot identity (auditable). DAILY: daily salary / daily duty hours. WEEKLY: weekly salary / (workingDaysPerWeek * daily duty hours). MONTHLY: monthly salary / (actual 28-31 calendar days * daily duty hours). HOURLY: hourly rate.
+  salaryType            String
+  applicableSalary      Float?
+  dailyDutyHours        Float?
+  workingDaysPerWeek    Int? // WEEKLY denominator snapshot (1-7)
+  weeklyScheduledHours  Float?
+  monthlyCalendarDays   Int? // actual 28/29/30/31
+  monthlyScheduledHours Float?
+  periodKind            String? // DAILY|WEEKLY|MONTHLY|HOURLY
+  periodKey             String? // e.g. WEEKLY Mon-Sun Asia/Dhaka
+  periodStart           DateTime?
+  periodEnd             DateTime?
+  hourlyRate            Float?
+  payableHours          Float?
+  payableMinutes        Int?
+  grossEarning          Float     @default(0)
+  overtimeEarning       Float     @default(0)
+  deductionAmount       Float     @default(0)
+  netEarning            Float     @default(0)
+
+  calculationStatus     String? // missing required config => incomplete; never estimated
+  incompleteReason      String?
+  calculatedAt          DateTime?
+  calculatedBy          String?
+  sourceType            String    @default("SESSION")
+  sourceRef             String?
+  /// For future idempotent accrual creation (no backfill in this task).
+  accrualIdempotencyKey String?   @unique
+
+  allocations        PaymentAllocation[]
+  advanceAdjustments AdvanceAdjustment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([staffId, periodStart])
+  @@index([periodKey])
+  @@index([calculationStatus])
+}
+
+/// Durable idempotency/replay record for coordinated salary payment (advance deduction + cash allocation). Append-only.
+model CoordinatedPaymentRequest {
+  id                 String   @id @default(cuid())
+  idempotencyKey     String   @unique
+  staffId            String
+  staff              Staff    @relation(fields: [staffId], references: [employeeId], onDelete: Restrict)
+  requestFingerprint String
+  status             String
+  responseJson       Json
+  createdAt          DateTime @default(now())
+
+  @@index([staffId, createdAt])
+}
+
+/// Payment-to-earning allocation. Supports multiple partial allocations and future oldest-unpaid-first settlement. Duplicate prevention via unique constraints.
+model PaymentAllocation {
+  id               String         @id @default(cuid())
+  paymentId        String
+  payment          Payment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  payrollEarningId String
+  payrollEarning   PayrollEarning @relation(fields: [payrollEarningId], references: [id], onDelete: Restrict)
+  staffId          String
+  staff            Staff          @relation(fields: [staffId], references: [employeeId], onDelete: Restrict)
+
+  amount         Float
+  allocationType String   @default("SETTLEMENT")
+  allocatedAt    DateTime @default(now())
+  allocatedBy    String?
+  /// Idempotency/audit metadata for future settlement/allocation APIs (no behavior in this task).
+  idempotencyKey String?  @unique
+  note           String?
+
+  advanceAdjustments AdvanceLog[] @relation("AdvanceLogPaymentAllocation")
+
+  createdAt DateTime @default(now())
+
+  @@unique([paymentId, payrollEarningId])
+  @@index([staffId, allocatedAt])
+  @@index([payrollEarningId])
+  @@index([paymentId])
+}
+
+// ---------------------------------------------------------------------------
 // Audit trail (append-only)
+
 // ---------------------------------------------------------------------------
 model AuditLog {
   id         String   @id @default(cuid())
@@ -266,6 +486,9 @@ model AuditLog {
   actorRole  String
   summary    String
   managedBy  String? // supervisor acting on behalf of staff
+  before     Json?
+  after      Json?
+  reason     String?
 
   @@index([timestamp])
   @@index([action])

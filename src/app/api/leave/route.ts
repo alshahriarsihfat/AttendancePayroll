@@ -28,6 +28,9 @@ export async function POST(request: Request) {
   if (dhakaDate(parsed.data.fromDate) > dhakaDate(parsed.data.toDate)) {
     return Response.json({ error: "fromDate must be on or before toDate" }, { status: 400 });
   }
+  const days = Math.floor((dhakaDate(parsed.data.toDate).getTime() - dhakaDate(parsed.data.fromDate).getTime()) / 86400000) + 1;
+  if (days <= 0 || days > 366) return Response.json({ error: "Invalid leave duration" }, { status: 400 });
+
   try {
     const staff = await prisma.staff.findUnique({ where: { employeeId: parsed.data.staffId }, select: { employeeId: true, fullName: true } });
     if (!staff) return Response.json({ error: "Staff not found" }, { status: 404 });
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
         data: {
           id: parsed.data.recordId, staffId: parsed.data.staffId, leaveType: parsed.data.leaveType,
           fromDate: dhakaDate(parsed.data.fromDate), toDate: dhakaDate(parsed.data.toDate),
-          days: parsed.data.days, reason: parsed.data.reason?.trim() || null, status: "Pending",
+          days, reason: parsed.data.reason?.trim() || null, status: "Pending",
         },
       });
       await tx.auditLog.create({

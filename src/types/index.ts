@@ -11,7 +11,7 @@ export type EmpRole = "STAFF" | "SUPERVISOR";
 export type SalaryType = "Daily" | "Weekly" | "Monthly" | "Hourly";
 export type EmployeeStatus = "Active" | "On-leave" | "Terminated";
 export type LeaveType =
-  | "Annual" | "Sick" | "Casual" | "Maternity" | "Paternity" | "Unpaid";
+    | "Annual" | "Sick" | "Earned" | "Casual" | "Maternity" | "Paternity" | "Unpaid";
 export type LeaveStatus = "Pending" | "Approved" | "Rejected" | "Cancelled";
 export type PaymentStatus = "Paid" | "Pending" | "UNPAID";
 
@@ -47,12 +47,14 @@ export interface Employee {
   baseSalary: number;     // monthly BDT
   dailyRate: number;      // BDT/day
   hourlyRate: number;     // BDT/hour
+  dailyDutyHours?: number; // hours/day (required for Daily/Weekly/Monthly payroll; no fallback)
+  workingDaysPerWeek?: number | null; // 1-7, required for Weekly payroll denominator
   // Custom shift (per employee)
   shiftStart: string;     // "09:00 AM"
   shiftEnd: string;       // "08:00 PM"
   mealBreakMin: number;   // paid meal allowance
   restMin: number;        // paid rest allowance
-  shiftId: string;        // template id (quick pick)
+
   photoUrl: string;       // Google Drive link or URL
   status: EmployeeStatus;
   isActive: boolean;
@@ -109,6 +111,12 @@ export interface TimeSession {
   completed: boolean;
   /** True if the system auto-clocked-out this session. */
   autoClockedOut?: boolean;
+  overtimeActivatedAt?: string;
+  overtimeStatus?: string;
+  overtimeMinutes?: number;
+  dailySalarySnapshot?: number;
+  dailyDutyHoursSnapshot?: number;
+  hourlyRateSnapshot?: number;
   // ---------------------------------------------------------------------------
   // Shift snapshot captured at clock-in. Historical sessions are judged against
   // THIS shift (not the employee's live shiftStart/shiftEnd), so editing a
@@ -154,7 +162,7 @@ export interface Payment {
   netPay: number;
   status: PaymentStatus;
   paidBy: string;
-  /** Settlement batch id â€” day-wise rows paid together in ONE transaction share it. */
+  /** Settlement batch id — day-wise rows paid together in ONE transaction share it. */
   batchId?: string;
 }
 

@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+﻿import { NextResponse, type NextRequest } from "next/server";
 
 function base64UrlDecode(input: string): Uint8Array {
   const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
@@ -45,16 +45,44 @@ async function validSession(value: string | undefined): Promise<{ role?: string 
   }
 }
 
+function sanitizeReturnToInternal(value: string | null): string | null {
+  if (!value) return null;
+  if (!value.startsWith("/") || value.startsWith("//")) return null;
+  if (value.includes("\\")) return null;
+  try {
+    const url = new URL(value, "http://localhost");
+    if (url.origin !== "http://localhost") return null;
+    if (url.pathname !== "/" && url.pathname !== "") return null;
+    return `${url.pathname === "" ? "/" : url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(request: NextRequest) {
-  const pathname = request.nextUrl.pathname;
+  const { pathname, search } = request.nextUrl;
   const session = await validSession(request.cookies.get(COOKIE_NAME)?.value);
-  if (pathname === "/login" || pathname.startsWith("/_next/") || pathname === "/favicon.ico" || pathname.startsWith("/api/auth")) {
+
+  if (pathname.startsWith("/_next/") || pathname === "/favicon.ico" || pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
+
+  if (pathname === "/login") {
+    if (session) {
+      const safe = sanitizeReturnToInternal(request.nextUrl.searchParams.get("returnTo"));
+      return NextResponse.redirect(new URL(safe || "/", request.url));
+    }
+    return NextResponse.next();
+  }
+
   if (!session) {
     if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-    return NextResponse.redirect(new URL("/login", request.url));
+    const loginUrl = new URL("/login", request.url);
+    const requested = sanitizeReturnToInternal(`${pathname}${search}`);
+    if (requested && requested !== "/login") loginUrl.searchParams.set("returnTo", requested);
+    return NextResponse.redirect(loginUrl);
   }
+
   const needed = requiredRole(pathname, request.method);
   if (needed === "ADMIN" && session.role !== "ADMIN") return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
   if (needed === "ELEVATED" && session.role !== "ADMIN" && session.role !== "SUPERVISOR") {
