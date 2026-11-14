@@ -8,10 +8,14 @@ vi.mock("@/server/db", () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    auditLog: {
+      create: vi.fn(),
+    },
+    $transaction: vi.fn(),
   },
 }));
 
-import { POST, PUT } from "./route";
+import { POST, PUT, DELETE } from "./route";
 import { prisma } from "@/server/db";
 import { COOKIE_NAME, encodeSession } from "@/lib/auth-session";
 import { DEFAULT_DEPARTMENT, toDateKey } from "@/lib/staff-input";
@@ -19,6 +23,8 @@ import { DEFAULT_DEPARTMENT, toDateKey } from "@/lib/staff-input";
 const staffCreate = prisma.staff.create as unknown as ReturnType<typeof vi.fn>;
 const staffUpdate = prisma.staff.update as unknown as ReturnType<typeof vi.fn>;
 const staffFindUnique = prisma.staff.findUnique as unknown as ReturnType<typeof vi.fn>;
+const auditCreate = prisma.auditLog.create as unknown as ReturnType<typeof vi.fn>;
+const transaction = prisma.$transaction as unknown as ReturnType<typeof vi.fn>;
 
 const SESSION = {
   role: "ADMIN" as const,
@@ -27,7 +33,7 @@ const SESSION = {
   exp: Math.floor(Date.now() / 1000) + 3600,
 };
 
-function request(body: unknown, method: "POST" | "PUT" = "POST"): Request {
+function request(body: unknown, method: "POST" | "PUT" | "DELETE" = "POST"): Request {
   return new Request("http://localhost/api/staff", {
     method,
     headers: {
@@ -77,6 +83,42 @@ function todayKey(): string {
   }).format(new Date());
 }
 
+/** A stored row as Prisma returns it (includes credentials to prove exclusion). */
+const existingRow = (overrides: Record<string, unknown> = {}) => ({
+  id: "cuid_1",
+  employeeId: "KP9801",
+  username: "kp9801",
+  password: "stored-hash-value",
+  fullName: "Test Staff",
+  email: "staff@example.test",
+  phone: "01767854321",
+  department: "Pharmacy Counter",
+  jobTitle: "Pharmacist",
+  section: "Sales Floor",
+  counter: 2,
+  role: "STAFF",
+  salaryType: "Hourly",
+  baseSalary: 0,
+  dailyRate: 0,
+  hourlyRate: 60,
+  dailyDutyHours: 8,
+  workingDaysPerWeek: null,
+  shiftStart: "09:00 AM",
+  shiftEnd: "08:00 PM",
+  mealBreakMin: 30,
+  restMin: 15,
+  photoUrl: "",
+  status: "ACTIVE",
+  isActive: true,
+  arrears: 0,
+  advance: 0,
+  joinDate: new Date("2024-01-05T00:00:00.000Z"),
+  endDate: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  ...overrides,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   staffFindUnique.mockResolvedValue(null);
@@ -91,6 +133,14 @@ beforeEach(() => {
     employeeId: "KP9801",
     ...data,
   }));
+  auditCreate.mockResolvedValue({});
+  // Run the callback with a transaction client backed by the same mocks.
+  transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+    fn({
+      staff: { findUnique: staffFindUnique, create: staffCreate, update: staffUpdate },
+      auditLog: { create: auditCreate },
+    })
+  );
 });
 
 describe("POST /api/staff — department is optional", () => {
@@ -219,6 +269,16 @@ describe("POST /api/staff — response and log hygiene", () => {
 });
 
 describe("PUT /api/staff — optional department and dates", () => {
+  beforeEach(() => {
+    const row = existingRow();
+    staffFindUnique.mockResolvedValue(row);
+    // Prisma returns the full updated row.
+    staffUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...row,
+      ...data,
+    }));
+  });
+
   it("normalizes a blank department to the neutral label", async () => {
     const response = await PUT(
       request({ employeeId: "KP9801", department: "  " }, "PUT")
@@ -251,5 +311,216 @@ describe("PUT /api/staff — optional department and dates", () => {
     const response = await PUT(request({ employeeId: "KP9801", joinDate: null }, "PUT"));
     expect(response.status).toBe(200);
     expect(staffUpdate.mock.calls[0][0].data).not.toHaveProperty("joinDate");
+  });
+});
+
+describe("Staff audit trail", () => {
+  describe("creation", () => {
+    it("records STAFF_CREATED with the server-side actor and after values", async () => {
+      const response = await POST(request(baseStaff()));
+      expect(response.status).toBe(201);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+
+      const entry = auditCreate.mock.calls[0][0].data;
+      expect(entry.action).toBe("STAFF_CREATED");
+      expect(entry.entityType).toBe("Staff");
+      expect(entry.entityId).toBe("KP9801");
+      expect(entry.actorName).toBe("Admin");
+      expect(entry.actorRole).toBe("ADMIN");
+      expect(entry.before).toBeUndefined();
+      expect(entry.after.employeeId).toBe("KP9801");
+      expect(entry.after.fullName).toBe("Test Staff");
+      expect(entry.after.joinDate).toBe("2024-01-05T00:00:00.000Z");
+    });
+
+    it("writes the staff row and its audit entry in one transaction", async () => {
+      await POST(request(baseStaff()));
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("never records passwords, hashes or unnecessary personal data", async () => {
+      await POST(request(baseStaff()));
+      const entry = auditCreate.mock.calls[0][0].data;
+      const serialized = JSON.stringify(entry);
+
+      expect(serialized).not.toContain("correct-horse");
+      expect(serialized.toLowerCase()).not.toContain("password");
+      expect(entry.after).not.toHaveProperty("password");
+      expect(entry.after).not.toHaveProperty("phone");
+      expect(entry.after).not.toHaveProperty("email");
+      expect(entry.after).not.toHaveProperty("photoUrl");
+    });
+
+    it("uses the authenticated actor, ignoring any client-supplied identity", async () => {
+      await POST(request(baseStaff({ actorName: "spoofed", actorRole: "STAFF", actorId: "KP9999" })));
+      const entry = auditCreate.mock.calls[0][0].data;
+      expect(entry.actorName).toBe("Admin");
+      expect(entry.actorRole).toBe("ADMIN");
+    });
+
+    it("does not write an audit entry when validation fails", async () => {
+      const response = await POST(request(baseStaff({ joinDate: "not-a-date" })));
+      expect(response.status).toBe(400);
+      expect(staffCreate).not.toHaveBeenCalled();
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("does not write an audit entry when the employee id is taken", async () => {
+      staffFindUnique.mockResolvedValue(existingRow());
+      const response = await POST(request(baseStaff()));
+      expect(response.status).toBe(409);
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("fails the whole operation when the audit write fails", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      auditCreate.mockRejectedValueOnce(new Error("audit unavailable"));
+
+      const response = await POST(request(baseStaff()));
+
+      expect(response.status).toBe(500);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+    });
+  });
+
+  describe("update", () => {
+    beforeEach(() => {
+      const row = existingRow();
+      staffFindUnique.mockResolvedValue(row);
+      staffUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...row,
+        ...data,
+      }));
+    });
+
+    it("records STAFF_UPDATED with before/after and the changed fields", async () => {
+      const response = await PUT(request({ employeeId: "KP9801", department: "Cash Counter" }, "PUT"));
+      expect(response.status).toBe(200);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+
+      const entry = auditCreate.mock.calls[0][0].data;
+      expect(entry.action).toBe("STAFF_UPDATED");
+      expect(entry.entityType).toBe("Staff");
+      expect(entry.entityId).toBe("KP9801");
+      expect(entry.actorName).toBe("Admin");
+      expect(entry.actorRole).toBe("ADMIN");
+      expect(entry.before.department).toBe("Pharmacy Counter");
+      expect(entry.after.department).toBe("Cash Counter");
+      expect(entry.before.joinDate).toBe("2024-01-05T00:00:00.000Z");
+      expect(entry.after.joinDate).toBe("2024-01-05T00:00:00.000Z");
+      expect(entry.summary).toContain("department");
+    });
+
+    it("records only the fields that actually changed", async () => {
+      await PUT(request({ employeeId: "KP9801", hourlyRate: 75 }, "PUT"));
+      const entry = auditCreate.mock.calls[0][0].data;
+      expect(entry.before.hourlyRate).toBe(60);
+      expect(entry.after.hourlyRate).toBe(75);
+      expect(entry.summary).toContain("hourlyRate");
+      expect(entry.summary).not.toContain("department");
+    });
+
+    it("never records passwords or personal contact data on update", async () => {
+      await PUT(request({ employeeId: "KP9801", fullName: "Renamed Staff", phone: "01700000000" }, "PUT"));
+      const serialized = JSON.stringify(auditCreate.mock.calls[0][0].data);
+      expect(serialized).not.toContain("stored-hash-value");
+      expect(serialized.toLowerCase()).not.toContain("password");
+      expect(serialized).not.toContain("01767854321");
+      expect(serialized).not.toContain("01700000000");
+      expect(serialized).not.toContain("staff@example.test");
+    });
+
+    it("does not write an audit entry for a no-op update", async () => {
+      const response = await PUT(request({ employeeId: "KP9801" }, "PUT"));
+      expect(response.status).toBe(200);
+      expect(staffUpdate).toHaveBeenCalledTimes(1);
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("does not write an audit entry when the staff member does not exist", async () => {
+      staffFindUnique.mockResolvedValue(null);
+      const response = await PUT(request({ employeeId: "KP9801", department: "Cash Counter" }, "PUT"));
+      expect(response.status).toBe(404);
+      expect(staffUpdate).not.toHaveBeenCalled();
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("does not write an audit entry when the update itself fails", async () => {
+      staffUpdate.mockRejectedValueOnce(new Error("db down"));
+      const response = await PUT(request({ employeeId: "KP9801", department: "Cash Counter" }, "PUT"));
+      expect(response.status).toBe(500);
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("termination", () => {
+    beforeEach(() => {
+      const row = existingRow();
+      staffFindUnique.mockResolvedValue(row);
+      staffUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...row,
+        ...data,
+      }));
+    });
+
+    it("records STAFF_TERMINATED with before/after", async () => {
+      const response = await DELETE(request({ employeeId: "KP9801" }, "DELETE"));
+      expect(response.status).toBe(200);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+
+      const entry = auditCreate.mock.calls[0][0].data;
+      expect(entry.action).toBe("STAFF_TERMINATED");
+      expect(entry.entityType).toBe("Staff");
+      expect(entry.entityId).toBe("KP9801");
+      expect(entry.actorName).toBe("Admin");
+      expect(entry.actorRole).toBe("ADMIN");
+      expect(entry.before.isActive).toBe(true);
+      expect(entry.before.status).toBe("ACTIVE");
+      expect(entry.after.isActive).toBe(false);
+      expect(entry.after.status).toBe("TERMINATED");
+      expect(typeof entry.after.endDate).toBe("string");
+    });
+
+    it("soft-deletes the row and audits it in one transaction", async () => {
+      await DELETE(request({ employeeId: "KP9801" }, "DELETE"));
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(staffUpdate.mock.calls[0][0].data.isActive).toBe(false);
+      expect(auditCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("never records credentials on termination", async () => {
+      await DELETE(request({ employeeId: "KP9801" }, "DELETE"));
+      const serialized = JSON.stringify(auditCreate.mock.calls[0][0].data);
+      expect(serialized).not.toContain("stored-hash-value");
+      expect(serialized.toLowerCase()).not.toContain("password");
+    });
+
+    it("does not write an audit entry when the staff member does not exist", async () => {
+      staffFindUnique.mockResolvedValue(null);
+      const response = await DELETE(request({ employeeId: "KP9801" }, "DELETE"));
+      expect(response.status).toBe(404);
+      expect(staffUpdate).not.toHaveBeenCalled();
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("does not write an audit entry when the termination fails", async () => {
+      staffUpdate.mockRejectedValueOnce(new Error("db down"));
+      const response = await DELETE(request({ employeeId: "KP9801" }, "DELETE"));
+      expect(response.status).toBe(500);
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
+
+    it("requires an authenticated admin actor", async () => {
+      const anon = new Request("http://localhost/api/staff", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ employeeId: "KP9801" }),
+      });
+      const response = await DELETE(anon);
+      expect(response.status).toBe(401);
+      expect(auditCreate).not.toHaveBeenCalled();
+    });
   });
 });

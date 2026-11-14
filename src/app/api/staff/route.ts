@@ -91,6 +91,60 @@ function fieldErrorResponse(error: unknown): Response | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Audit trail
+//
+// Only non-sensitive, identity-relevant columns are copied into AuditLog.before
+// / .after. Credentials (password hash) and unnecessary personal data (phone,
+// email, photo) are deliberately excluded. Dates are serialised to ISO strings
+// because the column is JSON.
+// ---------------------------------------------------------------------------
+const AUDIT_FIELDS = [
+  "employeeId",
+  "fullName",
+  "jobTitle",
+  "department",
+  "section",
+  "counter",
+  "role",
+  "salaryType",
+  "baseSalary",
+  "dailyRate",
+  "hourlyRate",
+  "dailyDutyHours",
+  "workingDaysPerWeek",
+  "shiftStart",
+  "shiftEnd",
+  "status",
+  "isActive",
+  "joinDate",
+  "endDate",
+] as const;
+
+type AuditValues = Prisma.InputJsonObject;
+
+function auditValues(row: Record<string, unknown>): AuditValues {
+  const out: Record<string, Prisma.InputJsonValue> = {};
+  for (const field of AUDIT_FIELDS) {
+    if (!(field in row)) continue;
+    const value = row[field];
+    out[field] = value instanceof Date ? value.toISOString() : (value as Prisma.InputJsonValue);
+  }
+  return out;
+}
+
+/** Fields whose value differs between the before and after snapshots. */
+function changedAuditFields(before: AuditValues, after: AuditValues): string[] {
+  return Object.keys(after).filter(
+    (field) => JSON.stringify(before[field] ?? null) !== JSON.stringify(after[field] ?? null)
+  );
+}
+
+function describeChange(changed: string[]): string {
+  if (changed.length === 0) return "no field changes";
+  return changed.join(", ");
+}
+
 /** PUT is a PARTIAL update — absent fields keep their DB values. This is what
  *  makes lightweight mutations (e.g. assigning a counter) work without sending
  *  the entire record, and lets admin edits skip the password when unchanged. */
@@ -193,7 +247,23 @@ export async function POST(request: Request) {
   }
 
   try {
-    const staff = await prisma.staff.create({ data: staffData(parsed.data, dates) });
+    // Staff row and its audit entry are written in one transaction: an audit
+    // failure rolls back the creation instead of leaving an untracked record.
+    const staff = await prisma.$transaction(async (tx) => {
+      const created = await tx.staff.create({ data: staffData(parsed.data, dates) });
+      await tx.auditLog.create({
+        data: {
+          action: "STAFF_CREATED",
+          entityType: "Staff",
+          entityId: created.employeeId,
+          actorName: actor.name,
+          actorRole: actor.role,
+          summary: `${actor.name} created staff ${created.employeeId} (${created.fullName})`,
+          after: auditValues(created as unknown as Record<string, unknown>),
+        },
+      });
+      return created;
+    });
     const { password: _password, ...safeStaff } = staff;
     return Response.json(safeStaff, { status: 201 });
   } catch (error) {
@@ -224,10 +294,33 @@ export async function PUT(request: Request) {
   }
 
   try {
-    const staff = await prisma.staff.update({
-      where: { employeeId: parsed.data.employeeId! },
-      data: staffUpdateData(parsed.data, dates),
+    const staff = await prisma.$transaction(async (tx) => {
+      const before = await tx.staff.findUnique({ where: { employeeId: parsed.data.employeeId! } });
+      if (!before) return null;
+      const data = staffUpdateData(parsed.data, dates);
+      const updated = await tx.staff.update({ where: { employeeId: parsed.data.employeeId! }, data });
+      // A no-op update (no fields supplied) is still successful, but there is
+      // nothing meaningful to record.
+      if (Object.keys(data).length > 0) {
+        const beforeValues = auditValues(before as unknown as Record<string, unknown>);
+        const afterValues = auditValues(updated as unknown as Record<string, unknown>);
+        const changed = changedAuditFields(beforeValues, afterValues);
+        await tx.auditLog.create({
+          data: {
+            action: "STAFF_UPDATED",
+            entityType: "Staff",
+            entityId: updated.employeeId,
+            actorName: actor.name,
+            actorRole: actor.role,
+            summary: `${actor.name} updated staff ${updated.employeeId} (${updated.fullName}): ${describeChange(changed)}`,
+            before: beforeValues,
+            after: afterValues,
+          },
+        });
+      }
+      return updated;
     });
+    if (!staff) return Response.json({ error: "Staff not found." }, { status: 404 });
     const { password: _password, ...safeStaff } = staff;
     return Response.json(safeStaff);
   } catch (error) {
@@ -242,10 +335,29 @@ export async function DELETE(request: Request) {
   const body = await request.json() as { employeeId?: string };
   if (!body.employeeId) return Response.json({ error: "employeeId is required" }, { status: 400 });
   try {
-    const staff = await prisma.staff.update({
-      where: { employeeId: body.employeeId },
-      data: { isActive: false, status: "TERMINATED", endDate: new Date() },
+    const staff = await prisma.$transaction(async (tx) => {
+      const before = await tx.staff.findUnique({ where: { employeeId: body.employeeId! } });
+      if (!before) return null;
+      // Termination is a soft delete: the row (and its payroll history) is kept.
+      const updated = await tx.staff.update({
+        where: { employeeId: body.employeeId! },
+        data: { isActive: false, status: "TERMINATED", endDate: new Date() },
+      });
+      await tx.auditLog.create({
+        data: {
+          action: "STAFF_TERMINATED",
+          entityType: "Staff",
+          entityId: updated.employeeId,
+          actorName: actor.name,
+          actorRole: actor.role,
+          summary: `${actor.name} terminated staff ${updated.employeeId} (${updated.fullName})`,
+          before: auditValues(before as unknown as Record<string, unknown>),
+          after: auditValues(updated as unknown as Record<string, unknown>),
+        },
+      });
+      return updated;
     });
+    if (!staff) return Response.json({ error: "Staff not found." }, { status: 404 });
     const { password: _password, ...safeStaff } = staff;
     return Response.json(safeStaff);
   } catch (error) {
