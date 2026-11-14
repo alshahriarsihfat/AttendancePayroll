@@ -1,4 +1,4 @@
-﻿-- CreateTable
+-- CreateTable
 CREATE TABLE "CoordinatedPaymentRequest" (
     "id" TEXT NOT NULL,
     "idempotencyKey" TEXT NOT NULL,
