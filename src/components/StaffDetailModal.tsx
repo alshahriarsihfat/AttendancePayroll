@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { Modal } from "./Modal";
 import { PhotoAvatar } from "./PhotoAvatar";
@@ -17,7 +17,10 @@ import type { Employee, LeaveType } from "../types";
 // Advance UX in this modal uses existing context/action only (no second adjustment implementation).
 // Policy: advances are separate from earned salary, never auto-deducted; only supervisor-explicit manual adjustment is allowed via authoritative payroll flows.
 
-type Tab = "attendance" | "payments" | "leave" | "departments" | "responsibilities";
+// Department & Responsibility assignment tabs were removed with the Department
+// module (no /api/departments, /api/staff-departments or
+// /api/staff-responsibilities routes exist). Only these tabs are rendered.
+type Tab = "attendance" | "payments" | "leave";
 
 const TABS: { key: Tab; label: string; icon: IconName }[] = [
   { key: "attendance", label: "Attendance", icon: "clock" },
@@ -46,38 +49,11 @@ export function StaffDetailModal({ staff, open, onClose }: {
   const [tab, setTab] = useState<Tab>("attendance");
   const [advanceOpen, setAdvanceOpen] = useState(false);
   const [advanceAmt, setAdvanceAmt] = useState("");
-  const [deptList, setDeptList] = useState<{ id: string; name: string; isActive: boolean }[]>([]);
-  const [deptAssignments, setDeptAssignments] = useState<any[]>([]);
-  const [deptLoading, setDeptLoading] = useState(false);
-  const [deptError, setDeptError] = useState("");
-  const [selectedDept, setSelectedDept] = useState("");
-  const [deptSaving, setDeptSaving] = useState(false);
-  const [respList, setRespList] = useState<{ id: string; name: string; isActive: boolean }[]>([]);
-  const [respAssignments, setRespAssignments] = useState<any[]>([]);
-  const [respLoading, setRespLoading] = useState(false);
-  const [respError, setRespError] = useState("");
-  const [selectedResp, setSelectedResp] = useState("");
-  const [respSaving, setRespSaving] = useState(false);
   const now = Date.now();
 
   const todaySess = staff ? todaySession(staff.employeeId) : undefined;
   const onLeaveToday = staff ? isOnLeaveToday(staff.employeeId) : false;
   const todayCalc = staff ? computeSession(todaySess, staff, data.config, now) : null;
-
-  useEffect(() => {
-    if (!staff || tab !== "departments") return;
-    setDeptLoading(true); setDeptError("");
-    Promise.all([
-      fetch("/api/departments", { credentials: "same-origin" }).then((r) => r.json()),
-      fetch(`/api/staff-departments?staffId=${staff.employeeId}`, { credentials: "same-origin" }).then((r) => r.json()),
-    ])
-      .then(([d, a]) => {
-        setDeptList(Array.isArray(d.departments) ? d.departments : []);
-        setDeptAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-      })
-      .catch(() => setDeptError("Failed to load"))
-      .finally(() => setDeptLoading(false));
-  }, [staff, tab]);
 
   // ---- day-wise unpaid dues (clocked-out shifts with no payment yet) ------
   const dues = useMemo(() => {
@@ -153,74 +129,6 @@ export function StaffDetailModal({ staff, open, onClose }: {
     if (!staff) return [];
     return data.leaveBalances.filter((b) => b.staffId === staff.employeeId);
   }, [data.leaveBalances, staff]);
-
-  useEffect(() => {
-    if (!staff || tab !== "responsibilities") return;
-    setRespLoading(true); setRespError("");
-    Promise.all([
-      fetch("/api/responsibilities", { credentials: "same-origin" }).then((r) => r.json()),
-      fetch(`/api/staff-responsibilities?staffId=${staff.employeeId}`, { credentials: "same-origin" }).then((r) => r.json()),
-    ])
-      .then(([d, a]) => {
-        setRespList(Array.isArray(d.responsibilities) ? d.responsibilities : []);
-        setRespAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-      })
-      .catch(() => setRespError("Failed to load"))
-      .finally(() => setRespLoading(false));
-  }, [staff, tab]);
-
-  const assignResp = async () => {
-    if (!staff || !selectedResp || respSaving) return;
-    setRespSaving(true);
-    try {
-      const res = await fetch("/api/staff-responsibilities", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staffId: staff.employeeId, responsibilityId: selectedResp }) });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Failed");
-      setSelectedResp("");
-      const a = await fetch(`/api/staff-responsibilities?staffId=${staff.employeeId}`, { credentials: "same-origin" }).then((r) => r.json());
-      setRespAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-    } catch (e: any) { setRespError(e?.message || "Failed"); }
-    finally { setRespSaving(false); }
-  };
-  const endResp = async (id: string) => {
-    if (respSaving) return;
-    setRespSaving(true);
-    try {
-      const res = await fetch(`/api/staff-responsibilities/${id}`, { method: "DELETE", credentials: "same-origin" });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Failed");
-      const a = await fetch(`/api/staff-responsibilities?staffId=${staff!.employeeId}`, { credentials: "same-origin" }).then((r) => r.json());
-      setRespAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-    } catch (e: any) { setRespError(e?.message || "Failed"); }
-    finally { setRespSaving(false); }
-  };
-
-  const assignDept = async () => {
-    if (!staff || !selectedDept || deptSaving) return;
-    setDeptSaving(true);
-    try {
-      const res = await fetch("/api/staff-departments", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ staffId: staff.employeeId, departmentId: selectedDept }) });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Failed");
-      setSelectedDept("");
-      // refresh
-      const a = await fetch(`/api/staff-departments?staffId=${staff.employeeId}`, { credentials: "same-origin" }).then((r) => r.json());
-      setDeptAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-    } catch (e: any) { setDeptError(e?.message || "Failed"); }
-    finally { setDeptSaving(false); }
-  };
-  const endDept = async (id: string) => {
-    if (deptSaving) return;
-    setDeptSaving(true);
-    try {
-      const res = await fetch(`/api/staff-departments/${id}`, { method: "DELETE", credentials: "same-origin" });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || "Failed");
-      const a = await fetch(`/api/staff-departments?staffId=${staff!.employeeId}`, { credentials: "same-origin" }).then((r) => r.json());
-      setDeptAssignments(Array.isArray(a.assignments) ? a.assignments : []);
-    } catch (e: any) { setDeptError(e?.message || "Failed"); }
-    finally { setDeptSaving(false); }
-  };
 
   if (!staff || !open) return null;
 
@@ -449,64 +357,6 @@ return (<>
           </div>
         )}
 
-{/* ================= DEPARTMENTS TAB ================= */}
-        {tab === "departments" && (
-          <div className="space-y-3">
-            {deptLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-            {deptError && <p className="text-sm text-rose-600">{deptError}</p>}
-            <div className="flex gap-2">
-              <select value={selectedDept} onChange={(e) => setSelectedDept(e.target.value)} className="h-9 rounded-lg border border-edge bg-surface px-2 text-sm">
-                <option value="">Select department</option>
-                {deptList.filter((d) => d.isActive).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
-              <Button size="sm" onClick={() => void assignDept()} disabled={deptSaving || !selectedDept}>Assign</Button>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-edge">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-edge text-left text-[10px] font-semibold uppercase tracking-wide text-faint-foreground"><th className="px-4 py-2">Department</th><th className="px-2 py-2">Start</th><th className="px-2 py-2">End</th><th className="px-4 py-2">Action</th></tr></thead>
-                <tbody className="divide-y divide-edge">
-                  {deptAssignments.map((a: any) => (
-                    <tr key={a.id}>
-                      <td className="px-4 py-2">{a.department?.name || a.departmentId}</td>
-                      <td className="px-2 py-2">{new Date(a.startDate).toLocaleDateString()}</td>
-                      <td className="px-2 py-2">{a.endDate ? new Date(a.endDate).toLocaleDateString() : "Active"}</td>
-                      <td className="px-4 py-2">{!a.endDate && <Button size="sm" variant="ghost" onClick={() => void endDept(a.id)}>End</Button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-{/* ================= RESPONSIBILITIES TAB ================= */}
-        {tab === "responsibilities" && (
-          <div className="space-y-3">
-            {respLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-            {respError && <p className="text-sm text-rose-600">{respError}</p>}
-            <div className="flex gap-2">
-              <select value={selectedResp} onChange={(e) => setSelectedResp(e.target.value)} className="h-9 rounded-lg border border-edge bg-surface px-2 text-sm">
-                <option value="">Select responsibility</option>
-                {respList.filter((d) => d.isActive).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
-              <Button size="sm" onClick={() => void assignResp()} disabled={respSaving || !selectedResp}>Assign</Button>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-edge">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-edge text-left text-[10px] font-semibold uppercase tracking-wide text-faint-foreground"><th className="px-4 py-2">Responsibility</th><th className="px-2 py-2">Start</th><th className="px-2 py-2">End</th><th className="px-4 py-2">Action</th></tr></thead>
-                <tbody className="divide-y divide-edge">
-                  {respAssignments.map((a: any) => (
-                    <tr key={a.id}>
-                      <td className="px-4 py-2">{a.responsibility?.name || a.responsibilityId}</td>
-                      <td className="px-2 py-2">{new Date(a.startDate).toLocaleDateString()}</td>
-                      <td className="px-2 py-2">{a.endDate ? new Date(a.endDate).toLocaleDateString() : "Active"}</td>
-                      <td className="px-4 py-2">{!a.endDate && <Button size="sm" variant="ghost" onClick={() => void endResp(a.id)}>End</Button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
         {tab === "leave" && (
           <div className="space-y-3">
             <div className="rounded-xl border border-edge p-4">
