@@ -4,6 +4,12 @@ import { prisma } from "@/server/db";
 import { hashPassword } from "@/lib/password";
 import { dbErrorResponse } from "@/lib/api-error";
 import { sessionFromRequest } from "@/lib/auth-session";
+import {
+  isStaffInputError,
+  normalizeDepartment,
+  normalizeEndDate,
+  normalizeJoinDate,
+} from "@/lib/staff-input";
 
 export const runtime = "nodejs";
 
@@ -14,7 +20,9 @@ const StaffSchema = z.object({
   fullName: z.string().min(1),
   email: z.string().optional(),
   phone: z.string().optional(),
-  department: z.string().min(1),
+  // Department is optional: a missing/blank value is stored as a neutral label
+  // (the DB column is NOT NULL) so the form never has to force a selection.
+  department: z.string().max(120).optional(),
   jobTitle: z.string().min(1),
   section: z.string().min(1),
   counter: z.number().int().nullable(),
@@ -35,11 +43,14 @@ const StaffSchema = z.object({
   isActive: z.boolean(),
   arrears: z.number(),
   advance: z.number(),
-  joinDate: z.string(),
-  endDate: z.string().nullable().optional(),
+  joinDate: z.string().nullish(),
+  endDate: z.string().nullish(),
 });
 
-function staffData(input: z.infer<typeof StaffSchema>) {
+function staffData(
+  input: z.infer<typeof StaffSchema>,
+  dates: { joinDate: Date; endDate: Date | null }
+) {
   return {
     employeeId: input.employeeId,
     username: input.username,
@@ -47,7 +58,7 @@ function staffData(input: z.infer<typeof StaffSchema>) {
     fullName: input.fullName,
     email: input.email || null,
     phone: input.phone || null,
-    department: input.department,
+    department: normalizeDepartment(input.department),
     jobTitle: input.jobTitle,
     section: input.section,
     counter: input.counter,
@@ -67,9 +78,17 @@ function staffData(input: z.infer<typeof StaffSchema>) {
     isActive: input.isActive,
     arrears: input.arrears,
     advance: input.advance,
-    joinDate: new Date(input.joinDate),
-    endDate: input.endDate ? new Date(input.endDate) : null,
+    joinDate: dates.joinDate,
+    endDate: dates.endDate,
   } satisfies Prisma.StaffCreateInput;
+}
+
+/** Maps a field-specific input error to a safe 400 response. */
+function fieldErrorResponse(error: unknown): Response | null {
+  if (isStaffInputError(error)) {
+    return Response.json({ error: error.message, field: error.field }, { status: 400 });
+  }
+  return null;
 }
 
 /** PUT is a PARTIAL update — absent fields keep their DB values. This is what
@@ -82,7 +101,7 @@ const StaffUpdateSchema = z.object({
   fullName: z.string().min(1).optional(),
   email: z.string().optional(),
   phone: z.string().optional(),
-  department: z.string().min(1).optional(),
+  department: z.string().max(120).optional(),
   jobTitle: z.string().min(1).optional(),
   section: z.string().min(1).optional(),
   counter: z.number().int().nullable().optional(),
@@ -102,11 +121,14 @@ const StaffUpdateSchema = z.object({
   isActive: z.boolean().optional(),
   arrears: z.number().optional(),
   advance: z.number().optional(),
-  joinDate: z.string().optional(),
-  endDate: z.string().nullable().optional(),
+  joinDate: z.string().nullish(),
+  endDate: z.string().nullish(),
 });
 
-function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
+function staffUpdateData(
+  input: z.infer<typeof StaffUpdateSchema>,
+  dates: { joinDate?: Date; endDate?: Date | null }
+) {
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
     if (value === undefined || key === "employeeId") continue;
@@ -121,16 +143,21 @@ function staffUpdateData(input: z.infer<typeof StaffUpdateSchema>) {
       case "status":
         data.status = value === "On-leave" ? "ON_LEAVE" : (value as string).toUpperCase();
         break;
+      case "department":
+        data.department = normalizeDepartment(value);
+        break;
+      case "joinDate":
+        // Normalized to a valid Date (or omitted) before this point.
+        if (dates.joinDate) data.joinDate = dates.joinDate;
+        break;
+      case "endDate":
+        // Blank/absent keeps `null`; never an Invalid Date.
+        data.endDate = dates.endDate ?? null;
+        break;
       case "email":
       case "phone":
       case "photoUrl":
         data[key] = (value as string) || null;
-        break;
-      case "joinDate":
-        data.joinDate = new Date(value as string);
-        break;
-      case "endDate":
-        data.endDate = value ? new Date(value as string) : null;
         break;
       default:
         data[key] = value;
@@ -150,8 +177,23 @@ export async function POST(request: Request) {
   }
   const existing = await prisma.staff.findUnique({ where: { employeeId: parsed.data.employeeId } });
   if (existing) return Response.json({ error: "Employee ID taken" }, { status: 409 });
+
+  // Normalize dates BEFORE any Prisma call: an invalid value must surface as a
+  // field-specific 400, never as an Invalid Date handed to the database.
+  let dates: { joinDate: Date; endDate: Date | null };
   try {
-    const staff = await prisma.staff.create({ data: staffData(parsed.data) });
+    dates = {
+      joinDate: normalizeJoinDate(parsed.data.joinDate),
+      endDate: normalizeEndDate(parsed.data.endDate),
+    };
+  } catch (error) {
+    const response = fieldErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
+
+  try {
+    const staff = await prisma.staff.create({ data: staffData(parsed.data, dates) });
     const { password: _password, ...safeStaff } = staff;
     return Response.json(safeStaff, { status: 201 });
   } catch (error) {
@@ -165,10 +207,26 @@ export async function PUT(request: Request) {
   if (actor.role !== "ADMIN") return Response.json({ error: "Admin access required" }, { status: 403 });
   const parsed = StaffUpdateSchema.safeParse(await request.json());
   if (!parsed.success) return Response.json({ error: "Invalid staff payload", details: parsed.error.flatten() }, { status: 400 });
+
+  // Same guarantee as POST: normalize before touching the database.
+  // A null joinDate on update means "leave unchanged" (the column is NOT NULL),
+  // while a null endDate explicitly clears it.
+  let dates: { joinDate?: Date; endDate?: Date | null };
+  try {
+    dates = {
+      joinDate: parsed.data.joinDate == null ? undefined : normalizeJoinDate(parsed.data.joinDate),
+      endDate: parsed.data.endDate === undefined ? undefined : normalizeEndDate(parsed.data.endDate),
+    };
+  } catch (error) {
+    const response = fieldErrorResponse(error);
+    if (response) return response;
+    throw error;
+  }
+
   try {
     const staff = await prisma.staff.update({
       where: { employeeId: parsed.data.employeeId! },
-      data: staffUpdateData(parsed.data),
+      data: staffUpdateData(parsed.data, dates),
     });
     const { password: _password, ...safeStaff } = staff;
     return Response.json(safeStaff);

@@ -5,6 +5,7 @@ import { Button, Field, Input, Select, Divider } from "./ui";
 import { PhotoAvatar } from "./PhotoAvatar";
 import type { Employee, EmpRole, SalaryType } from "../types";
 import type { FieldError } from "../lib/validation";
+import { DEFAULT_DEPARTMENT } from "../lib/staff-input";
 import { COUNTER_NUMBERS, idFromSerial } from "../lib/config";
 
 const EMPTY: Partial<Employee> = {
@@ -109,8 +110,9 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
               </Select>
             </Field>
             <Field label="Designation" required error={errors.jobTitle}><Input value={form.jobTitle} onChange={(e) => set("jobTitle", e.target.value)} placeholder="e.g. Pharmacist" /></Field>
-            <Field label="Department" required error={errors.department}>
-              <Select value={form.department} onChange={(e) => set("department", e.target.value)}>
+            <Field label="Department" error={errors.department} hint="Optional — unassigned is fine.">
+              <Select value={form.department ?? ""} onChange={(e) => set("department", e.target.value)}>
+                <option value="">{DEFAULT_DEPARTMENT}</option>
                 {data.departments.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
               </Select>
             </Field>
@@ -156,7 +158,7 @@ export function StaffFormModal({ open, onClose, editing }: { open: boolean; onCl
         <div>
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-faint-foreground">Shift Hours ({form.shiftStart || "..:.."} – {form.shiftEnd || "..:.."})</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Join Date" required error={errors.joinDate}><Input type="date" value={form.joinDate} onChange={(e) => set("joinDate", e.target.value)} /></Field>
+            <Field label="Join Date" error={errors.joinDate} hint="Defaults to today when left blank."><Input type="date" value={form.joinDate} onChange={(e) => set("joinDate", e.target.value)} /></Field>
             <Field label="Shift Start" required error={errors.shiftStart}><Input value={form.shiftStart} onChange={(e) => set("shiftStart", e.target.value)} placeholder="09:00 AM" /></Field>
             <Field label="Shift End" required error={errors.shiftEnd}><Input value={form.shiftEnd} onChange={(e) => set("shiftEnd", e.target.value)} placeholder="08:00 PM" /></Field>
             <Field label="Paid Meal (min)"><Input type="number" value={form.mealBreakMin} onChange={(e) => set("mealBreakMin", e.target.value)} /></Field>

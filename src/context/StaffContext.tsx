@@ -6,6 +6,14 @@ import type { FormResult } from "./AppContext.types";
 import { useData } from "./DataContext";
 import { useAuth } from "./AuthContext";
 import { useUI } from "./UIContext";
+import {
+  DEFAULT_DEPARTMENT,
+  isStaffInputError,
+  normalizeDepartment,
+  normalizeEndDate,
+  normalizeJoinDate,
+  toDateKey,
+} from "@/lib/staff-input";
 
 interface StaffContextValue {
   createStaff: (d: Partial<Employee>) => Promise<FormResult>;
@@ -41,6 +49,17 @@ export function StaffProvider({ children }: { children: ReactNode }) {
     else if (!/^[a-z0-9_]{3,20}$/.test(username)) errors.push({ field: "username", message: "3-20 chars: a-z, 0-9, _" });
     else if (data.staff.some(s => s.username.toLowerCase() === username)) errors.push({ field: "username", message: "Username taken" });
     if (employeeId && data.staff.some(s => s.employeeId === employeeId)) errors.push({ field: "employeeId", message: "Employee ID taken" });
+
+    // Department is optional; join date blank/whitespace/null ⇒ today. An invalid
+    // non-empty date is rejected here, before any request is made.
+    const department = normalizeDepartment(d.department);
+    let joinDate: Date = new Date();
+    try {
+      joinDate = normalizeJoinDate(d.joinDate);
+    } catch (error) {
+      if (isStaffInputError(error)) errors.push({ field: error.field, message: error.message });
+      else errors.push({ field: "joinDate", message: "Join date is required (YYYY-MM-DD)." });
+    }
     if (errors.length) return { ok: false, errors };
 
     const payload = {
@@ -50,7 +69,7 @@ export function StaffProvider({ children }: { children: ReactNode }) {
       fullName,
       phone,
       email: d.email ?? "",
-      department: d.department ?? "Pharmacy",
+      department,
       jobTitle: d.jobTitle ?? "Pharmacist",
       section: d.section ?? "Main",
       counter: d.counter ?? null,
@@ -71,7 +90,7 @@ export function StaffProvider({ children }: { children: ReactNode }) {
       isActive: d.isActive ?? true,
       arrears: d.arrears ?? 0,
       advance: d.advance ?? 0,
-      joinDate: d.joinDate ?? new Date().toISOString().slice(0, 10),
+      joinDate: toDateKey(joinDate),
       endDate: d.endDate ?? null,
     };
 
@@ -84,8 +103,14 @@ export function StaffProvider({ children }: { children: ReactNode }) {
       });
       if (!response.ok) {
         let message = "Staff create failed.";
-        try { const p = await response.json(); if (p?.error) message = p.error; } catch { /* ignore */ }
+        let field: string | undefined;
+        try {
+          const p = await response.json() as { error?: string; field?: string };
+          if (p?.error) message = p.error;
+          if (p?.field) field = p.field;
+        } catch { /* ignore */ }
         toast(message, "error");
+        if (field) return { ok: false, errors: [{ field, message }] };
         return { ok: false, errors: [{ field: "global", message }] };
       }
       const created = await response.json();
@@ -143,6 +168,26 @@ export function StaffProvider({ children }: { children: ReactNode }) {
       else if (data.staff.some(s => (s.recordId !== id && s.employeeId !== id) && s.username.toLowerCase() === username)) errors.push({ field: "username", message: "Username taken" });
     }
     if (d.employeeId !== undefined && employeeId && data.staff.some(s => (s.recordId !== id && s.employeeId !== id) && s.employeeId === employeeId)) errors.push({ field: "employeeId", message: "Employee ID taken" });
+    // Normalize the same optional/blank-tolerant rules used on create, so an
+    // untouched join-date field never sends an empty or invalid value.
+    if (d.department !== undefined) d = { ...d, department: normalizeDepartment(d.department) };
+    if (d.joinDate !== undefined) {
+      try {
+        d = { ...d, joinDate: toDateKey(normalizeJoinDate(d.joinDate)) };
+      } catch (error) {
+        if (isStaffInputError(error)) errors.push({ field: error.field, message: error.message });
+        else errors.push({ field: "joinDate", message: "Join date must be a valid date (YYYY-MM-DD)." });
+      }
+    }
+    if (d.endDate !== undefined) {
+      try {
+        const endDate = normalizeEndDate(d.endDate);
+        d = { ...d, endDate: endDate ? toDateKey(endDate) : null };
+      } catch (error) {
+        if (isStaffInputError(error)) errors.push({ field: error.field, message: error.message });
+        else errors.push({ field: "endDate", message: "End date must be a valid date (YYYY-MM-DD)." });
+      }
+    }
     if (errors.length) return { ok: false, errors };
 
     const payload: Record<string, unknown> = { employeeId: current.employeeId };
@@ -163,8 +208,14 @@ export function StaffProvider({ children }: { children: ReactNode }) {
       });
       if (!response.ok) {
         let message = "Staff update failed.";
-        try { const p = await response.json(); if (p?.error) message = p.error; } catch { /* ignore */ }
+        let field: string | undefined;
+        try {
+          const p = await response.json() as { error?: string; field?: string };
+          if (p?.error) message = p.error;
+          if (p?.field) field = p.field;
+        } catch { /* ignore */ }
         toast(message, "error");
+        if (field) return { ok: false, errors: [{ field, message }] };
         return { ok: false, errors: [{ field: "global", message }] };
       }
       const updatedServer = await response.json();

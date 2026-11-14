@@ -1,4 +1,5 @@
 import type { Employee } from "../types";
+import { normalizeJoinDate } from "./staff-input";
 
 // ============================================================================
 // Validation — guards before any write. Bad input is rejected with a clear
@@ -31,9 +32,22 @@ export function validateStaff(
   if (!opts.isUpdate && (!s.password || !isNonEmpty(s.password))) errors.push({ field: "password", message: "Password is required." });
   if (s.email && !isEmail(s.email)) errors.push({ field: "email", message: "Enter a valid email or leave blank." });
   if (!s.phone || !isPhone(s.phone || "")) errors.push({ field: "phone", message: "A valid phone is required." });
-  if (!s.department) errors.push({ field: "department", message: "Department is required." });
+  // Department is optional — the form and API accept a blank value and store a
+  // neutral label. It must never block staff creation.
   if (!s.jobTitle || !isNonEmpty(s.jobTitle || "")) errors.push({ field: "jobTitle", message: "Designation is required." });
-  if (!s.joinDate || !isISODate(s.joinDate || "")) errors.push({ field: "joinDate", message: "Join date is required (YYYY-MM-DD)." });
+  // Join date is optional (blank ⇒ today), but a provided value must be a real
+  // calendar date. `isISODate` accepts rolled-over dates (e.g. 2024-02-30), so
+  // the shared strict normalizer is the source of truth here.
+  if (s.joinDate && !isISODate(s.joinDate)) errors.push({ field: "joinDate", message: "Join date must be a valid date (YYYY-MM-DD)." });
+  if (s.joinDate) {
+    try {
+      normalizeJoinDate(s.joinDate);
+    } catch {
+      if (!errors.some((e) => e.field === "joinDate")) {
+        errors.push({ field: "joinDate", message: "Join date must be a valid date (YYYY-MM-DD)." });
+      }
+    }
+  }
   if (!st) errors.push({ field: "salaryType", message: "Select a salary type." });
 
   // 2C.6.2: single configured hourly rate for active earning calculation (all salary types are labels).

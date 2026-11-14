@@ -10,6 +10,19 @@ import { Prisma } from "@prisma/client";
 
 const DB_UNREACHABLE_CODES = new Set(["P1000", "P1001", "P1002", "P1008"]);
 
+// Prisma error messages embed the whole invocation, which can include password
+// hashes, PINs and phone numbers. Anything logged or returned must be redacted.
+const SENSITIVE_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/[0-9a-f]{32}:[0-9a-f]{128}/gi, "<redacted-hash>"],
+  [/\b\d{6,}\b/g, "<redacted-number>"],
+];
+
+function redact(value: unknown): string {
+  let text = typeof value === "string" ? value : String(value);
+  for (const [pattern, replacement] of SENSITIVE_PATTERNS) text = text.replace(pattern, replacement);
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
 // Network/driver failures usually surface as plain Errors whose message
 // contains a specific socket/DNS/driver phrase. Match tightly — NEVER broad
 // words like "connected"/"timeout": Prisma error bodies embed arbitrary
@@ -21,7 +34,7 @@ const CONNECTION_HINTS =
 
 export function dbErrorResponse(error: unknown): Response {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    console.error("[db] Prisma error", error.code, error.message);
+    console.error("[db] Prisma error", error.code, redact(error.message));
     switch (error.code) {
       case "P2002":
         // Unique constraint violation
@@ -59,33 +72,30 @@ export function dbErrorResponse(error: unknown): Response {
     return Response.json({ error: "Leave request not found." }, { status: 404 });
   }
   // Generated client disagrees with the schema at runtime — almost always a
-  // dev server / bundled client that predates the last `prisma generate`
-  // (seen here: TimeSession shift-snapshot columns rejected by a stale
-  // long-running server). Say that explicitly instead of guessing.
+  // bundled client that predates the last `prisma generate`. Ordinary bad input
+  // is rejected with a field-specific 400 before Prisma is ever called, so
+  // reaching this branch really is a client/schema mismatch.
+  // The Prisma message embeds the full invocation (password hashes, phone
+  // numbers), so it is neither logged nor returned.
   if (error instanceof Prisma.PrismaClientValidationError) {
-    console.error("[api] prisma client/schema mismatch", error.message);
-    const details = process.env.NODE_ENV === "production"
-      ? undefined
-      : error.message.slice(0, 400);
+    console.error("[api] prisma client/schema mismatch", error.name);
     return Response.json(
-      details
-        ? { error: "The database schema and Prisma client are out of sync — restart the dev server after running `prisma generate`.", details }
-        : { error: "The database schema and Prisma client are out of sync — restart the server after running `prisma generate`." },
+      { error: "The database schema and Prisma client are out of sync — redeploy after running `prisma generate`." },
       { status: 500 }
     );
   }
   // Neon/driver adapters often wrap failures in plain Errors instead of Prisma
   // typed errors, so also match the specific connection symptoms by message.
   if (error instanceof Error && CONNECTION_HINTS.test(error.message)) {
-    console.error("[api] network/db", error.message);
+    console.error("[api] network/db", redact(error.message));
     return Response.json({ error: "Could not reach the database. Please check the connection and try again." }, { status: 500 });
   }
-  console.error("[api]", error);
+  console.error("[api]", error instanceof Error ? `${error.name}: ${redact(error.message)}` : redact(error));
   const message = "Unexpected server error.";
   // In development, attach the underlying message so the real cause surfaces to
   // the caller instead of a generic crash; production stays opaque.
   const details = process.env.NODE_ENV === "production"
     ? undefined
-    : error instanceof Error ? error.message : String(error);
+    : redact(error instanceof Error ? error.message : String(error));
   return Response.json(details ? { error: message, details } : { error: message }, { status: 500 });
 }

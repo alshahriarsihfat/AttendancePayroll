@@ -96,9 +96,20 @@ describe("Validation utilities", () => {
       expect(errors.filter((e) => e.field === "email")).toHaveLength(0);
     });
 
-    it("requires department", () => {
+    it("allows a missing department (never blocks staff creation)", () => {
       const errors = validateStaff({ ...validStaff, department: "" }, { existingIds: [], existingUsernames: [] });
-      expect(errors.some((e) => e.field === "department")).toBe(true);
+      expect(errors.some((e) => e.field === "department")).toBe(false);
+    });
+
+    it("allows a missing department field entirely", () => {
+      const { department: _omitted, ...noDepartment } = validStaff;
+      const errors = validateStaff(noDepartment, { existingIds: [], existingUsernames: [] });
+      expect(errors.some((e) => e.field === "department")).toBe(false);
+    });
+
+    it("allows a blank joinDate (defaults to today server-side)", () => {
+      const errors = validateStaff({ ...validStaff, joinDate: "" }, { existingIds: [], existingUsernames: [] });
+      expect(errors.some((e) => e.field === "joinDate")).toBe(false);
     });
 
     it("requires jobTitle", () => {
@@ -106,13 +117,13 @@ describe("Validation utilities", () => {
       expect(errors.some((e) => e.field === "jobTitle")).toBe(true);
     });
 
-    it("requires joinDate", () => {
-      const errors = validateStaff({ ...validStaff, joinDate: "" }, { existingIds: [], existingUsernames: [] });
+    it("validates joinDate format", () => {
+      const errors = validateStaff({ ...validStaff, joinDate: "invalid" }, { existingIds: [], existingUsernames: [] });
       expect(errors.some((e) => e.field === "joinDate")).toBe(true);
     });
 
-    it("validates joinDate format", () => {
-      const errors = validateStaff({ ...validStaff, joinDate: "invalid" }, { existingIds: [], existingUsernames: [] });
+    it("rejects a non-existent calendar date", () => {
+      const errors = validateStaff({ ...validStaff, joinDate: "2024-02-30" }, { existingIds: [], existingUsernames: [] });
       expect(errors.some((e) => e.field === "joinDate")).toBe(true);
     });
 
